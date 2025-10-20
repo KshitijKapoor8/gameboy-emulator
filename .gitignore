@@ -1,4 +1,4 @@
 build
 .cache
-zig-out
+zig-out/*
 .zig-cache

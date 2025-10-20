@@ -26,7 +26,14 @@ pub fn main() !void {
     const screenSurface = c.SDL_GetWindowSurface(window);
     _ = c.SDL_FillRect(screenSurface, null, c.SDL_MapRGB(screenSurface.*.format, 0xFF, 0xFF, 0xFF));
     _ = c.SDL_UpdateWindowSurface(window);
-    c.SDL_Delay(2000);
-    c.SDL_DestroyWindow(window);
-    c.SDL_Quit();
+
+    var event: c.SDL_Event = undefined;
+    var running: bool = true;
+    while (running) {
+        while (c.SDL_PollEvent(&event) != 0) {
+            if (event.type == c.SDL_QUIT) running = false;
+        }
+
+        c.SDL_Delay(10);
+    }
 }
