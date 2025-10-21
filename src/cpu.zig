@@ -1,15 +1,7 @@
 const std = @import("std");
+const Bus64KB = @import("bus.zig").Bus64KB;
 
-// GB has a 64Kb Bus
-pub const Bus = struct {
-    mem: [0x10000]u8 = .{0} ** 0x10000,
-    pub fn read(self: *const Bus, addr: u16) u8 {
-        return @intCast(self.mem[addr]);
-    }
-    pub fn write(self: *Bus, addr: u16, val: u8) void {
-        self.mem[addr] = val;
-    }
-};
+const expect = std.testing.expect;
 
 pub const CPU = struct {
     // accumulator and flags
@@ -49,8 +41,7 @@ pub const CPU = struct {
         return (self.F & mask) != 0;
     }
 
-    // TODO: verify
-    pub fn step(self: *CPU, bus: *Bus) u32 {
+    pub fn step(self: *CPU, bus: *Bus64KB()) u32 {
         if (self.halted) return 4;
 
         const op = bus.read(self.PC);
