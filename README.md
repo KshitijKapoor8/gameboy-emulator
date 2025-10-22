@@ -1,4 +1,4 @@
 # Gameboy Emulator
 
-A simple gameboy emulator written in C++.
+A simple gameboy emulator written in Zig.
 

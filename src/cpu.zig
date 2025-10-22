@@ -41,6 +41,12 @@ pub const CPU = struct {
         return (self.F & mask) != 0;
     }
 
+    // helper to read HL as a 16-bit address
+    // H is the upper 8 bits of an address, L is the lower 8 bits of an address
+    inline fn getHL(self: *const CPU) u16 {
+        return (@as(u16, self.H) << 8) | self.L;
+    }
+
     pub fn step(self: *CPU, bus: *Bus64KB()) u32 {
         if (self.halted) return 4;
 
@@ -50,12 +56,62 @@ pub const CPU = struct {
         switch (op) {
             0x00 => return 4,
 
+
+            // Ox0E LD C, d8
+            0x0E => {
+                self.C = bus.read(self.PC);
+                self.PC +%= 1;
+                return 8;
+            },
+            // 0x1E LD E, d8
+            0x1E => {
+                self.E = bus.read(self.PC);
+                self.PC +%= 1;
+                return 8;
+            },
+            // 0x2E LD L, d8
+            0x2E => {
+                self.L = bus.read(self.PC);
+                self.PC +%= 1;
+                return 8;
+            },
+
             // 0x3E LD A, d8
             0x3E => {
                 self.A = bus.read(self.PC);
                 self.PC +%= 1;
                 return 8;
             },
+
+            // 0x4E LD C,(HL)
+            0x4E => {
+                const val = bus.read(self.getHL());
+                self.C = val;
+                return 8;
+
+            },
+
+            // 0x5E LD E,(HL)
+            0x5E => {
+                const val = bus.read(self.getHL());
+                self.E = val;
+                return 8;
+
+            },
+
+            // 0x6E LD L,(HL)
+            0x6E => {
+                const val = bus.read(self.getHL());
+                self.L = val;
+                return 8;
+            },
+
+            // 0x7E LD A,(HL)
+            0x7E => {
+                const val = bus.read(self.getHL());
+                self.A = val;
+                return 8;
+            }
         }
     }
 };
