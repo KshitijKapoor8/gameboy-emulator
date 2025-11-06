@@ -1,84 +1,213 @@
 const std = @import("std");
 const expect = std.testing.expect;
-const expectError = std.testing.expectError;
 
-pub fn Bus64KB() type {
-    return BusFactory(0x10000);
+const PAGE_SIZE: u16 = 0x100; // 256
+const BUS_SIZE: u32 = 0x10000; // 2^16
+
+const pageReadFn = *const fn ([]u8, u8) u8;
+const pageWriteFn = *const fn ([]u8, u8, u8) void;
+
+const Page = struct {
+    dirty: bool,
+    start_address: u16,
+    present: bool = false, // potentially the device is not ready yet or something
+    read_fn: pageReadFn,
+    write_fn: pageWriteFn,
+};
+
+// Bus of size 64Kb
+const Bus = struct {
+    num_pages: u32 = BUS_SIZE / PAGE_SIZE,
+    pages: [BUS_SIZE / PAGE_SIZE]Page = undefined,
+    mem: [BUS_SIZE]u8 = .{0} ** BUS_SIZE,
+    size: usize = BUS_SIZE,
+
+    fn addrToPage(self: *Bus, addr: u16) !Page {
+        const page_number: u16 = addr / PAGE_SIZE;
+        if (page_number >= self.num_pages) {
+            return error.PageNotFound;
+        }
+        if (!self.pages[page_number].present) {
+            return error.PageNotFound;
+        }
+
+        return self.pages[page_number];
+    }
+};
+
+pub const Mapping = struct {
+    start: u16,
+    end: u16, // inclusive
+    read: pageReadFn,
+    write: pageWriteFn,
+};
+
+pub const SystemBus = struct {
+    bus: *Bus,
+    mappings: []const Mapping,
+
+    pub fn init(self: *SystemBus, mappings: []const Mapping) !void {
+        self.mappings = mappings;
+        var size: u32 = 0;
+
+        for (self.mappings) |mapping| {
+            size += (@as(u32, mapping.end) - @as(u32, mapping.start)) + 1;
+        }
+
+        if (size > BUS_SIZE) {
+            return error.OutOfMemory;
+        }
+
+        for (self.mappings) |mapping| {
+            var addr: u32 = mapping.start;
+            const end: u32 = mapping.end;
+
+            while (addr <= end) : (addr += PAGE_SIZE) {
+                const page_ix: usize = addr >> 8;
+                self.bus.pages[page_ix].read_fn = mapping.read;
+                self.bus.pages[page_ix].write_fn = mapping.write;
+                self.bus.pages[page_ix].start_address = @intCast(addr);
+                self.bus.pages[page_ix].dirty = false;
+                self.bus.pages[page_ix].present = true;
+            }
+
+            size += (@as(u32, mapping.end) - @as(u32, mapping.start)) + 1;
+        }
+    }
+
+    pub fn read(self: *SystemBus, addr: u16) !u8 {
+        const page = self.bus.addrToPage(addr) catch |err| {
+            if (err == error.PageNotFound) {
+                return error.PageNotFound;
+            }
+            return err;
+        };
+
+        const start: usize = page.start_address;
+        const slice = self.bus.mem[start .. start + PAGE_SIZE];
+
+        return page.read_fn(slice, @intCast(addr % PAGE_SIZE));
+    }
+
+    pub fn write(self: *SystemBus, addr: u16, val: u8) !void {
+        const page = self.bus.addrToPage(addr) catch |err| {
+            if (err == error.PageNotFound) {
+                return error.PageNotFound;
+            }
+            return err;
+        };
+
+        const start: usize = page.start_address;
+        const slice = self.bus.mem[start .. start + PAGE_SIZE];
+
+        page.write_fn(slice, @intCast(addr % PAGE_SIZE), val);
+    }
+};
+
+fn pageReadBasic(mem: []u8, offset: u8) u8 {
+    return mem[offset];
 }
 
-pub fn Bus(comptime size: usize) type {
-    return BusFactory(size);
+fn pageWriteBasic(mem: []u8, offset: u8, byte: u8) void {
+    mem[offset] = byte;
 }
 
-// creates a Bus of specified size
-fn BusFactory(comptime size_req: ?usize) type {
-    const size: usize = size_req orelse 0x10000;
+const test_basic_mappings = [1]Mapping{
+    .{ .start = 0x0000, .end = 0xFFFF, .read = pageReadBasic, .write = pageWriteBasic },
+};
 
-    return struct {
-        const Self = @This();
-        mem: [size]u8 = .{0} ** size,
-        size: usize = size,
+var bus = Bus{};
 
-        pub fn init() Self {
-            return .{};
-        }
+fn makeSystemBusFull(mappings: []const Mapping) !struct { bus: Bus, sysbus: SystemBus } {
+    var sysbus = SystemBus{ .bus = &bus, .mappings = &.{} };
+    try sysbus.init(mappings);
+    return .{ .bus = bus, .sysbus = sysbus };
+}
 
-        pub fn read(self: *Self, addr: u16) u8 {
-            return @intCast(self.mem[addr]);
-        }
-        pub fn write(self: *Self, addr: u16, val: u8) void {
-            self.mem[addr] = val;
-        }
+test "Create SystemBus" {
+    const sysbus: SystemBus = (try makeSystemBusFull(&test_basic_mappings)).sysbus;
 
-        pub fn writeBuffer(self: *Self, addr: u16, buffer: []const u8) !void {
-            if (buffer.len + addr > self.size) {
-                return error.OutOfMemory;
-            }
-            for (0..buffer.len, buffer) |i, byte| {
-                const idx: u16 = @intCast(i);
-                self.write(addr + idx, byte);
-            }
-        }
+    try expect(sysbus.bus.pages[0].read_fn == pageReadBasic);
+    try expect(sysbus.bus.pages[0].write_fn == pageWriteBasic);
+}
+
+test "Bus write, then read" {
+    var sysbus: SystemBus = (try makeSystemBusFull(&test_basic_mappings)).sysbus;
+
+    const value = 0x42;
+    try sysbus.write(0x1234, value);
+    try expect(try sysbus.read(0x1234) == value);
+}
+
+test "Write at end of page, read back" {
+    var sysbus: SystemBus = (try makeSystemBusFull(&test_basic_mappings)).sysbus;
+
+    const addr: u16 = 0x00FF;
+    const val: u8 = 0xAA;
+    try sysbus.write(addr, val);
+    try expect(try sysbus.read(addr) == val);
+}
+
+fn pageReadAlt(_: []u8, _: u8) u8 {
+    return 0x99;
+}
+fn pageWriteAlt(_: []u8, _: u8, _: u8) void {
+    return;
+}
+
+test "Different mappings apply to different pages" {
+    const mappings = [_]Mapping{
+        .{ .start = 0x0000, .end = 0x00FF, .read = pageReadBasic, .write = pageWriteBasic },
+        .{ .start = 0x0100, .end = 0x01FF, .read = pageReadAlt, .write = pageWriteAlt },
+    };
+    var sysbus: SystemBus = (try makeSystemBusFull(&mappings)).sysbus;
+
+    // first page should use basic
+    try sysbus.write(0x000A, 0x11);
+    try expect(try sysbus.read(0x000A) == 0x11);
+
+    // second page should use alt (always returns 0x99)
+    try expect(try sysbus.read(0x010A) == 0x99);
+}
+
+test "Mapped pages have present=true" {
+    var local_bus = Bus{};
+    const partial = [_]Mapping{
+        .{ .start = 0x0000, .end = 0x03FF, .read = pageReadBasic, .write = pageWriteBasic }, // 1KB -> first 4 pages
+    };
+    var sys = SystemBus{ .bus = &local_bus, .mappings = &.{} };
+    try sys.init(&partial);
+
+    // pages 0..3 should be present
+    try expect(local_bus.pages[0].present);
+    try expect(local_bus.pages[1].present);
+    try expect(local_bus.pages[2].present);
+    try expect(local_bus.pages[3].present);
+    // page 4 should not
+    try expect(!local_bus.pages[4].present);
+}
+
+test "Unmapped address returns PageNotFound" {
+    const partial = [_]Mapping{
+        .{ .start = 0x0000, .end = 0x0FFF, .read = pageReadBasic, .write = pageWriteBasic },
+    };
+
+    var sysbus: SystemBus = (try makeSystemBusFull(&partial)).sysbus;
+
+    // no backing, fail
+    _ = sysbus.read(0x9000) catch |err| {
+        try expect(err == error.PageNotFound);
+        return;
     };
 }
 
-test "Bus Read and Write" {
-    var bus = Bus64KB().init();
-    const TEST_VALUE: u8 = 0xA;
-    bus.write(0, TEST_VALUE);
-    try expect(bus.read(0) == TEST_VALUE);
-}
-
-test "Bus Write Buffer" {
-    var bus = Bus64KB().init();
-    const TEST_LENGTH: u9 = 0x100;
-    const TEST_VALUE: u8 = 0xA;
-    const TEST_VALUES: [TEST_LENGTH]u8 = .{TEST_VALUE} ** TEST_LENGTH;
-
-    const addr = 0;
-
-    try bus.writeBuffer(addr, &TEST_VALUES);
-    for (0..TEST_LENGTH) |i| {
-        const idx: u16 = @intCast(i);
-        try expect(bus.read(addr + idx) == TEST_VALUE);
-    }
-}
-
-test "Bus OOM" {
-    var bus = Bus(0x10).init();
-    const TEST_LENGTH: u9 = 0x10;
-    const TEST_VALUE: u8 = 0xA;
-    const TEST_VALUES: [TEST_LENGTH]u8 = .{TEST_VALUE} ** TEST_LENGTH;
-
-    const addr_ok: comptime_int = 0;
-
-    try bus.writeBuffer(addr_ok, &TEST_VALUES);
-    for (0..TEST_LENGTH) |i| {
-        const idx: u16 = @intCast(i);
-        try expect(bus.read(addr_ok + idx) == TEST_VALUE);
-    }
-
-    const addr_err: comptime_int = 1;
-
-    try expectError(error.OutOfMemory, bus.writeBuffer(addr_err, &TEST_VALUES));
+test "Init fails when mappings exceed bus size" {
+    // full bus + one extra byte
+    const bad = [_]Mapping{
+        .{ .start = 0x0000, .end = 0xFFFF, .read = pageReadBasic, .write = pageWriteBasic },
+        .{ .start = 0x10000 - 1, .end = 0x10000 - 1, .read = pageReadBasic, .write = pageWriteBasic },
+    };
+    _ = makeSystemBusFull(&bad) catch |err| {
+        try expect(err == error.OutOfMemory);
+    };
 }
