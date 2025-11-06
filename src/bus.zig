@@ -205,6 +205,7 @@ test "Init fails when mappings exceed bus size" {
     // full bus + one extra byte
     const bad = [_]Mapping{
         .{ .start = 0x0000, .end = 0xFFFF, .read = pageReadBasic, .write = pageWriteBasic },
+
         .{ .start = 0x10000 - 1, .end = 0x10000 - 1, .read = pageReadBasic, .write = pageWriteBasic },
     };
     _ = makeSystemBusFull(&bad) catch |err| {

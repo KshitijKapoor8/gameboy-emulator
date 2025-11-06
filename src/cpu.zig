@@ -56,7 +56,6 @@ pub const CPU = struct {
         switch (op) {
             0x00 => return 4,
 
-
             // Ox0E LD C, d8
             0x0E => {
                 self.C = bus.read(self.PC);
@@ -88,7 +87,6 @@ pub const CPU = struct {
                 const val = bus.read(self.getHL());
                 self.C = val;
                 return 8;
-
             },
 
             // 0x5E LD E,(HL)
@@ -96,7 +94,6 @@ pub const CPU = struct {
                 const val = bus.read(self.getHL());
                 self.E = val;
                 return 8;
-
             },
 
             // 0x6E LD L,(HL)
@@ -111,7 +108,7 @@ pub const CPU = struct {
                 const val = bus.read(self.getHL());
                 self.A = val;
                 return 8;
-            }
+            },
         }
     }
 };
