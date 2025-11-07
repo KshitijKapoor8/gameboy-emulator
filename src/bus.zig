@@ -4,24 +4,33 @@ const expect = std.testing.expect;
 const PAGE_SIZE: u16 = 0x100; // 256
 const BUS_SIZE: u32 = 0x10000; // 2^16
 
-const pageReadFn = *const fn ([]u8, u8) u8;
-const pageWriteFn = *const fn ([]u8, u8, u8) void;
+const PageReadFn = *const fn ([]u8, u8) u8;
+const PageWriteFn = *const fn ([]u8, u8, u8) void;
 
+/// # Represents a fixed sized page that has some backing
 const Page = struct {
     dirty: bool,
     start_address: u16,
-    present: bool = false, // potentially the device is not ready yet or something
-    read_fn: pageReadFn,
-    write_fn: pageWriteFn,
+    present: bool = false, // potentially if the device is not ready yet
+    read_fn: PageReadFn,
+    write_fn: PageWriteFn,
 };
 
-// Bus of size 64Kb
+/// # Represents an abstracted bus divided into fixed sized pages
 const Bus = struct {
     num_pages: u32 = BUS_SIZE / PAGE_SIZE,
     pages: [BUS_SIZE / PAGE_SIZE]Page = undefined,
     mem: [BUS_SIZE]u8 = .{0} ** BUS_SIZE,
     size: usize = BUS_SIZE,
 
+    /// # Translate an address to a page
+    ///
+    /// # Parameters
+    /// - `self`: a reference to the struct
+    /// - `addr`: a u16 representing the address on the bus to get the page for
+    ///
+    /// # Returns
+    /// The page that `addr` belongs to, or errors if the page is not present
     fn addrToPage(self: *Bus, addr: u16) !Page {
         const page_number: u16 = addr / PAGE_SIZE;
         if (page_number >= self.num_pages) {
@@ -35,17 +44,33 @@ const Bus = struct {
     }
 };
 
+/// A mapping structure to define read and write callbacks
 pub const Mapping = struct {
     start: u16,
     end: u16, // inclusive
-    read: pageReadFn,
-    write: pageWriteFn,
+    read: PageReadFn,
+    write: PageWriteFn,
 };
 
+/// The system bus that corresponds to memory and devices
 pub const SystemBus = struct {
     bus: *Bus,
     mappings: []const Mapping,
 
+    /// # Initialize the system bus
+    ///
+    /// This function sets up the pages backing the system bus based on a list of
+    /// non-overlapping mappings
+    ///
+    /// # Parameters
+    /// - `self`: a reference to the system bus struct
+    /// - `mappings`: an array of mappings, where each mapping specifies a start and end
+    ///    address as well as read and write function callbacks (for things like MMIO). Note that
+    ///    it is assumed that the mappings are page-aligned
+    ///
+    /// # Returns
+    /// Can return an OutOfMemory error if the mappings specified would exceed the size of the bus,
+    /// returns nothing otherwise
     pub fn init(self: *SystemBus, mappings: []const Mapping) !void {
         self.mappings = mappings;
         var size: u32 = 0;
@@ -75,11 +100,20 @@ pub const SystemBus = struct {
         }
     }
 
+    /// # Read a single byte at a bus address
+    ///
+    /// This function will first get a page from the address and then
+    /// dispatch to the specific read callback as specified by the page
+    ///
+    /// # Parameters
+    /// - `self`: a reference to the SystemBus struct
+    /// - `addr`: a u16 that specifies the bus address to read
+    ///
+    /// # Returns
+    /// Error if the page cannot be found (propagated from addrToPage),
+    /// or the byte otherwise
     pub fn read(self: *SystemBus, addr: u16) !u8 {
         const page = self.bus.addrToPage(addr) catch |err| {
-            if (err == error.PageNotFound) {
-                return error.PageNotFound;
-            }
             return err;
         };
 
@@ -89,11 +123,21 @@ pub const SystemBus = struct {
         return page.read_fn(slice, @intCast(addr % PAGE_SIZE));
     }
 
+    /// # Write a single byte to a bus address
+    ///
+    /// This function will first get a page from the address and then
+    /// dispatch to the specific write callback as specified by the page
+    ///
+    /// # Parameters
+    /// - `self`: a reference to the SystemBus struct
+    /// - `addr`: a u16 that specifies the bus address to write to
+    /// - `val`: a u8 that specifies the value to write
+    ///
+    /// # Returns
+    /// Error if the page cannot be found (propagated from addrToPage),
+    /// or nothing otherwise
     pub fn write(self: *SystemBus, addr: u16, val: u8) !void {
         const page = self.bus.addrToPage(addr) catch |err| {
-            if (err == error.PageNotFound) {
-                return error.PageNotFound;
-            }
             return err;
         };
 
