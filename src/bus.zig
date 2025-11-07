@@ -43,6 +43,7 @@ pub const Bus = struct {
 
         for (&bus.pages, 0..bus.num_pages) |*page, i| {
             page.start_address = @intCast(PAGE_SIZE * i);
+            page.present = false;
         }
 
         return bus;

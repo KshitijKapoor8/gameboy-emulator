@@ -191,17 +191,16 @@ test "Mapped pages have present=true" {
 }
 
 test "Unmapped address returns PageNotFound" {
+    var local_bus = Bus.init();
     const partial = [_]Mapping{
         .{ .start = 0x0000, .end = 0x0FFF, .read = pageReadBasic, .write = pageWriteBasic },
     };
 
-    var sysbus: SystemBus = (try makeSystemBusFull(&partial)).sysbus;
+    var sysbus = SystemBus{ .bus = &local_bus, .mappings = &.{} };
+    try sysbus.init(&partial);
 
     // no backing, fail
-    _ = sysbus.read(0x9000) catch |err| {
-        try expectError(error.PageNotFound, err);
-        return;
-    };
+    try expectError(error.PageNotFound, sysbus.read(0x9000));
 }
 
 test "Init fails when mappings exceed bus size" {
@@ -211,7 +210,6 @@ test "Init fails when mappings exceed bus size" {
 
         .{ .start = 0x10000 - 1, .end = 0x10000 - 1, .read = pageReadBasic, .write = pageWriteBasic },
     };
-    _ = makeSystemBusFull(&bad) catch |err| {
-        try expectError(error.OutOfMemory, err);
-    };
+
+    try expectError(error.OutOfMemory, makeSystemBusFull(&bad));
 }
