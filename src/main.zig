@@ -3,7 +3,7 @@ const expect = std.testing.expect;
 const windowing = @import("window.zig");
 
 comptime {
-    _ = @import("bus.zig");
+    _ = @import("system_bus.zig");
 }
 
 pub fn main() !void {
