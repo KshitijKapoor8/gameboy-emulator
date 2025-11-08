@@ -5,23 +5,20 @@ pub const BUS_SIZE: u32 = @import("bus.zig").BUS_SIZE;
 pub const Page = @import("bus.zig").Page;
 pub const PageReadFn = @import("bus.zig").PageReadFn;
 pub const PageWriteFn = @import("bus.zig").PageWriteFn;
+pub const MMIO = @import("devices/mmio.zig").MMIO;
+pub const MEMORY_MAP = @import("devices/mmio.zig").MEMORY_MAP;
 
 const expect = std.testing.expect;
 const expectEqual = std.testing.expectEqual;
 const expectError = std.testing.expectError;
 
-/// A mapping structure to define read and write callbacks
-pub const Mapping = struct {
-    start: u16,
-    end: u16, // inclusive
-    read: PageReadFn,
-    write: PageWriteFn,
-};
+var g_bus: Bus = Bus.init();
+pub var g_system_bus: SystemBus = .{ .bus = &g_bus, .mappings = MEMORY_MAP[0..] };
 
 /// The system bus that corresponds to memory and devices
 pub const SystemBus = struct {
     bus: *Bus,
-    mappings: []const Mapping,
+    mappings: []const MMIO,
 
     /// # Initialize the system bus
     ///
@@ -30,19 +27,19 @@ pub const SystemBus = struct {
     ///
     /// # Parameters
     /// - `self`: a reference to the system bus struct
-    /// - `mappings`: an array of mappings, where each mapping specifies a start and end
+    /// - `mappings`: an array of mappings, where each mapping specifies a.start_address and end
     ///    address as well as read and write function callbacks (for things like MMIO). Note that
     ///    it is assumed that the mappings are page-aligned
     ///
     /// # Returns
     /// Can return an OutOfMemory error if the mappings specified would exceed the size of the bus,
     /// returns nothing otherwise
-    pub fn init(self: *SystemBus, mappings: []const Mapping) !void {
+    pub fn init(self: *SystemBus, mappings: []const MMIO) !void {
         self.mappings = mappings;
         var size: u32 = 0;
 
         for (self.mappings) |mapping| {
-            size += (@as(u32, mapping.end) - @as(u32, mapping.start)) + 1;
+            size += (@as(u32, mapping.end_address) - @as(u32, mapping.start_address)) + 1;
         }
 
         if (size > BUS_SIZE) {
@@ -50,8 +47,8 @@ pub const SystemBus = struct {
         }
 
         for (self.mappings) |mapping| {
-            var addr: u32 = mapping.start;
-            const end: u32 = mapping.end;
+            var addr: u32 = mapping.start_address;
+            const end: u32 = mapping.end_address;
 
             while (addr <= end) : (addr += PAGE_SIZE) {
                 var page: *Page = try self.bus.addrToPage(@intCast(addr));
@@ -59,8 +56,6 @@ pub const SystemBus = struct {
                 page.write_fn = mapping.write;
                 page.present = true;
             }
-
-            size += (@as(u32, mapping.end) - @as(u32, mapping.start)) + 1;
         }
     }
 
@@ -116,13 +111,13 @@ fn pageWriteBasic(mem: []u8, offset: u8, byte: u8) void {
     mem[offset] = byte;
 }
 
-const test_basic_mappings = [1]Mapping{
-    .{ .start = 0x0000, .end = 0xFFFF, .read = pageReadBasic, .write = pageWriteBasic },
+const test_basic_mappings = [1]MMIO{
+    .{ .name = "test", .start_address = 0x0000, .end_address = 0xFFFF, .read = pageReadBasic, .write = pageWriteBasic },
 };
 
 var bus = Bus.init();
 
-fn makeSystemBusFull(mappings: []const Mapping) !struct { bus: Bus, sysbus: SystemBus } {
+fn makeSystemBusFull(mappings: []const MMIO) !struct { bus: Bus, sysbus: SystemBus } {
     var sysbus = SystemBus{ .bus = &bus, .mappings = &.{} };
     try sysbus.init(mappings);
     return .{ .bus = bus, .sysbus = sysbus };
@@ -143,7 +138,7 @@ test "Bus write, then read" {
     try expect(try sysbus.read(0x1234) == value);
 }
 
-test "Write at end of page, read back" {
+test "Write at.end_address of page, read back" {
     var sysbus: SystemBus = (try makeSystemBusFull(&test_basic_mappings)).sysbus;
 
     const addr: u16 = 0x00FF;
@@ -160,9 +155,9 @@ fn pageWriteAlt(_: []u8, _: u8, _: u8) void {
 }
 
 test "Different mappings apply to different pages" {
-    const mappings = [_]Mapping{
-        .{ .start = 0x0000, .end = 0x00FF, .read = pageReadBasic, .write = pageWriteBasic },
-        .{ .start = 0x0100, .end = 0x01FF, .read = pageReadAlt, .write = pageWriteAlt },
+    const mappings = [_]MMIO{
+        .{ .name = "test", .start_address = 0x0000, .end_address = 0x00FF, .read = pageReadBasic, .write = pageWriteBasic },
+        .{ .name = "test", .start_address = 0x0100, .end_address = 0x01FF, .read = pageReadAlt, .write = pageWriteAlt },
     };
     var sysbus: SystemBus = (try makeSystemBusFull(&mappings)).sysbus;
 
@@ -176,8 +171,8 @@ test "Different mappings apply to different pages" {
 
 test "Mapped pages have present=true" {
     var local_bus = Bus.init();
-    const partial = [_]Mapping{
-        .{ .start = 0x0000, .end = 0x03FF, .read = pageReadBasic, .write = pageWriteBasic }, // 1KB -> first 4 pages
+    const partial = [_]MMIO{
+        .{ .name = "test", .start_address = 0x0000, .end_address = 0x03FF, .read = pageReadBasic, .write = pageWriteBasic }, // 1KB -> first 4 pages
     };
     var sys = SystemBus{ .bus = &local_bus, .mappings = &.{} };
     try sys.init(&partial);
@@ -192,8 +187,8 @@ test "Mapped pages have present=true" {
 
 test "Unmapped address returns PageNotFound" {
     var local_bus = Bus.init();
-    const partial = [_]Mapping{
-        .{ .start = 0x0000, .end = 0x0FFF, .read = pageReadBasic, .write = pageWriteBasic },
+    const partial = [_]MMIO{
+        .{ .name = "test", .start_address = 0x0000, .end_address = 0x0FFF, .read = pageReadBasic, .write = pageWriteBasic },
     };
 
     var sysbus = SystemBus{ .bus = &local_bus, .mappings = &.{} };
@@ -205,11 +200,15 @@ test "Unmapped address returns PageNotFound" {
 
 test "Init fails when mappings exceed bus size" {
     // full bus + one extra byte
-    const bad = [_]Mapping{
-        .{ .start = 0x0000, .end = 0xFFFF, .read = pageReadBasic, .write = pageWriteBasic },
+    const bad = [_]MMIO{
+        .{ .name = "test", .start_address = 0x0000, .end_address = 0xFFFF, .read = pageReadBasic, .write = pageWriteBasic },
 
-        .{ .start = 0x10000 - 1, .end = 0x10000 - 1, .read = pageReadBasic, .write = pageWriteBasic },
+        .{ .name = "test", .start_address = 0x10000 - 1, .end_address = 0x10000 - 1, .read = pageReadBasic, .write = pageWriteBasic },
     };
 
     try expectError(error.OutOfMemory, makeSystemBusFull(&bad));
+}
+
+test "Verify that the global system bus is correctly initialized" {
+    try expect(std.mem.eql(u8, g_system_bus.mappings[0].name, "ROM0"));
 }
