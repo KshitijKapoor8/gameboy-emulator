@@ -13,7 +13,9 @@ const expectEqual = std.testing.expectEqual;
 const expectError = std.testing.expectError;
 
 var g_bus: Bus = Bus.init();
+var g_test_bus: Bus = Bus.init();
 pub var g_system_bus: SystemBus = .{ .bus = &g_bus, .mappings = MEMORY_MAP[0..] };
+pub var g_test_system_bus: SystemBus = .{ .bus = &g_test_bus, .mappings = MEMORY_MAP[0..] };
 
 /// The system bus that corresponds to memory and devices
 pub const SystemBus = struct {
