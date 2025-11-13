@@ -18,10 +18,22 @@ pub const Sprite = packed struct {
 pub const Oam = struct {
     // 160 bytes of the memory that represents the OAM
     mem: [OAM_SIZE]u8 = [_]u8{0} ** OAM_SIZE,
+    ppu_mode: *const u8 = undefined,
 
+    // initializes OAM based on PPU mode
+    pub fn init(self: *Oam, ppu_mode: *const u8) void {
+        self.ppu_mode = ppu_mode;
+        self.reset();
+    }
     // converts the entire OAM into a Sprite
     pub fn sprites(self: *Oam) []Sprite {
         return std.mem.bytesAsSlice(Sprite, self.mem[0..]);
+    }
+
+    // checks if ppu mode allows for reads and writes!
+    fn accessAllowed(self: *Oam) bool {
+        const mode = self.ppu_mode.*;
+        return !(mode == 2 or mode == 3);
     }
 
     // set all oam bytes to 0
@@ -32,12 +44,16 @@ pub const Oam = struct {
     // return byte of memory at offset
     pub fn read(self: *Oam, mem: []u8, off: u8) u8 {
         _ = mem; // nonsense but we pass it in in the general devices.zig lol
+        if (!self.accessAllowed()) 
+            return 0xFF;
         return self.mem[off];
     }
 
     // write byte of memory at offset
     pub fn write(self: *Oam, mem: []u8, off: u8, val: u8) void {
         _ = mem; // nonsense but we pass it in in the general devices.zig lol
+        if (!self.accessAllowed()) 
+            return;
         self.mem[off] = val;
     }
 
@@ -83,7 +99,9 @@ fn setEntry(o: *Oam, idx: usize, y: u8, x: u8, tile: u8, flags: u8) void {
 
 test "OAM: reset zeroes all 160 bytes" {
     // make instance of stuct
+    var mode: u8 = 0;
     var o = Oam{};
+    o.init(&mode);
     
     for (o.mem[0..], 0..) |*b, i| 
     {
@@ -97,7 +115,9 @@ test "OAM: reset zeroes all 160 bytes" {
 }
 
 test "OAM: read/write on single bytes" {
+    var mode: u8 = 0;
     var o = Oam{};
+    o.init(&mode);
     // mem is pretty useless in OAM context so just pass in empty
     o.write(&[_]u8{}, 0x00, 0x12);
     o.write(&[_]u8{}, 0x9F, 0xAB);
@@ -106,7 +126,9 @@ test "OAM: read/write on single bytes" {
 }
 
 test "OAM: selectScanlineSprites caps at 10 and preserves OAM order" {
+    var mode: u8 = 0;
     var o = Oam{};
+    o.init(&mode);
     // put 12 sprites on LY=50
     const ly: u8 = 50;
     for (std.math.min(12, SPRITE_COUNT)) |i| {
