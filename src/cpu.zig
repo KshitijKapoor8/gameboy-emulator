@@ -31,12 +31,30 @@ pub const CPU = struct {
     SP: u16,
     PC: u16,
     halted: bool = false,
+    ime: bool = false, // Interrupt Master Enable
 
     // flag masks
     pub const Z_FLAG: u8 = 0b1000_0000;
     pub const N_FLAG: u8 = 0b0100_0000;
     pub const H_FLAG: u8 = 0b0010_0000;
     pub const C_FLAG: u8 = 0b0001_0000;
+
+    pub fn init() CPU {
+        return .{
+            .A = 0,
+            .F = 0,
+            .B = 0,
+            .C = 0,
+            .D = 0,
+            .E = 0,
+            .H = 0,
+            .L = 0,
+            .SP = 0,
+            .PC = 0,
+            .halted = false,
+            .ime = false,
+        };
+    }
 
     /// # Set a specific flag using a flag mask
     ///
@@ -1944,12 +1962,867 @@ pub const CPU = struct {
         return 4;
     }
 
+    // ==================== CB-Prefixed Instructions ====================
+    
+    // Helper functions for CB instructions
+    
+    /// RLC - Rotate Left through Carry (CB version)
+    inline fn rlc(self: *CPU, val: u8) u8 {
+        const carry = (val & 0x80) != 0;
+        const result = (val << 1) | @as(u8, if (carry) 1 else 0);
+        self.setFlag(Z_FLAG, result == 0);
+        self.setFlag(N_FLAG, false);
+        self.setFlag(H_FLAG, false);
+        self.setFlag(C_FLAG, carry);
+        return result;
+    }
+    
+    /// RRC - Rotate Right through Carry (CB version)
+    inline fn rrc(self: *CPU, val: u8) u8 {
+        const carry = (val & 0x01) != 0;
+        const result = (val >> 1) | @as(u8, if (carry) 0x80 else 0);
+        self.setFlag(Z_FLAG, result == 0);
+        self.setFlag(N_FLAG, false);
+        self.setFlag(H_FLAG, false);
+        self.setFlag(C_FLAG, carry);
+        return result;
+    }
+    
+    /// RL - Rotate Left (CB version)
+    inline fn rl(self: *CPU, val: u8) u8 {
+        const old_carry: u8 = if (self.getFlag(C_FLAG)) 1 else 0;
+        const new_carry = (val & 0x80) != 0;
+        const result = (val << 1) | old_carry;
+        self.setFlag(Z_FLAG, result == 0);
+        self.setFlag(N_FLAG, false);
+        self.setFlag(H_FLAG, false);
+        self.setFlag(C_FLAG, new_carry);
+        return result;
+    }
+    
+    /// RR - Rotate Right (CB version)
+    inline fn rr(self: *CPU, val: u8) u8 {
+        const old_carry: u8 = if (self.getFlag(C_FLAG)) 0x80 else 0;
+        const new_carry = (val & 0x01) != 0;
+        const result = (val >> 1) | old_carry;
+        self.setFlag(Z_FLAG, result == 0);
+        self.setFlag(N_FLAG, false);
+        self.setFlag(H_FLAG, false);
+        self.setFlag(C_FLAG, new_carry);
+        return result;
+    }
+    
+    /// SLA - Shift Left Arithmetic
+    inline fn sla(self: *CPU, val: u8) u8 {
+        const carry = (val & 0x80) != 0;
+        const result = val << 1;
+        self.setFlag(Z_FLAG, result == 0);
+        self.setFlag(N_FLAG, false);
+        self.setFlag(H_FLAG, false);
+        self.setFlag(C_FLAG, carry);
+        return result;
+    }
+    
+    /// SRA - Shift Right Arithmetic (keep sign bit)
+    inline fn sra(self: *CPU, val: u8) u8 {
+        const carry = (val & 0x01) != 0;
+        const result = (val >> 1) | (val & 0x80);
+        self.setFlag(Z_FLAG, result == 0);
+        self.setFlag(N_FLAG, false);
+        self.setFlag(H_FLAG, false);
+        self.setFlag(C_FLAG, carry);
+        return result;
+    }
+    
+    /// SWAP - Swap nibbles
+    inline fn swap(self: *CPU, val: u8) u8 {
+        const result = ((val & 0x0F) << 4) | ((val & 0xF0) >> 4);
+        self.setFlag(Z_FLAG, result == 0);
+        self.setFlag(N_FLAG, false);
+        self.setFlag(H_FLAG, false);
+        self.setFlag(C_FLAG, false);
+        return result;
+    }
+    
+    /// SRL - Shift Right Logical
+    inline fn srl(self: *CPU, val: u8) u8 {
+        const carry = (val & 0x01) != 0;
+        const result = val >> 1;
+        self.setFlag(Z_FLAG, result == 0);
+        self.setFlag(N_FLAG, false);
+        self.setFlag(H_FLAG, false);
+        self.setFlag(C_FLAG, carry);
+        return result;
+    }
+    
+    /// BIT - Test bit
+    inline fn bit(self: *CPU, val: u8, bit_num: u3) void {
+        const bit_set = (val & (@as(u8, 1) << bit_num)) != 0;
+        self.setFlag(Z_FLAG, !bit_set);
+        self.setFlag(N_FLAG, false);
+        self.setFlag(H_FLAG, true);
+    }
+    
+    /// RES - Reset bit
+    inline fn res(val: u8, bit_num: u3) u8 {
+        return val & ~(@as(u8, 1) << bit_num);
+    }
+    
+    /// SET - Set bit
+    inline fn set(val: u8, bit_num: u3) u8 {
+        return val | (@as(u8, 1) << bit_num);
+    }
+
+    // 0xCB: CB Prefix - Extended instruction set
+    fn op_cb_prefix(self: *CPU, system_bus: *SystemBus) !u32 {
+        const cb_opcode = try system_bus.read(self.PC);
+        self.PC +%= 1;
+        
+        const instruction = CB_OPCODE_TABLE[cb_opcode];
+        return try instruction.handler(self, system_bus);
+    }
+    
+    // CB Opcode handlers - organized by pattern
+    // RLC r (0x00-0x07)
+    fn op_cb_rlc_b(self: *CPU, _: *SystemBus) !u32 { self.B = self.rlc(self.B); return 8; }
+    fn op_cb_rlc_c(self: *CPU, _: *SystemBus) !u32 { self.C = self.rlc(self.C); return 8; }
+    fn op_cb_rlc_d(self: *CPU, _: *SystemBus) !u32 { self.D = self.rlc(self.D); return 8; }
+    fn op_cb_rlc_e(self: *CPU, _: *SystemBus) !u32 { self.E = self.rlc(self.E); return 8; }
+    fn op_cb_rlc_h(self: *CPU, _: *SystemBus) !u32 { self.H = self.rlc(self.H); return 8; }
+    fn op_cb_rlc_l(self: *CPU, _: *SystemBus) !u32 { self.L = self.rlc(self.L); return 8; }
+    fn op_cb_rlc_hl(self: *CPU, bus: *SystemBus) !u32 {
+        const addr = get16BitRegister(self.H, self.L);
+        const val = try bus.read(addr);
+        try bus.write(addr, self.rlc(val));
+        return 16;
+    }
+    fn op_cb_rlc_a(self: *CPU, _: *SystemBus) !u32 { self.A = self.rlc(self.A); return 8; }
+    
+    // RRC r (0x08-0x0F)
+    fn op_cb_rrc_b(self: *CPU, _: *SystemBus) !u32 { self.B = self.rrc(self.B); return 8; }
+    fn op_cb_rrc_c(self: *CPU, _: *SystemBus) !u32 { self.C = self.rrc(self.C); return 8; }
+    fn op_cb_rrc_d(self: *CPU, _: *SystemBus) !u32 { self.D = self.rrc(self.D); return 8; }
+    fn op_cb_rrc_e(self: *CPU, _: *SystemBus) !u32 { self.E = self.rrc(self.E); return 8; }
+    fn op_cb_rrc_h(self: *CPU, _: *SystemBus) !u32 { self.H = self.rrc(self.H); return 8; }
+    fn op_cb_rrc_l(self: *CPU, _: *SystemBus) !u32 { self.L = self.rrc(self.L); return 8; }
+    fn op_cb_rrc_hl(self: *CPU, bus: *SystemBus) !u32 {
+        const addr = get16BitRegister(self.H, self.L);
+        const val = try bus.read(addr);
+        try bus.write(addr, self.rrc(val));
+        return 16;
+    }
+    fn op_cb_rrc_a(self: *CPU, _: *SystemBus) !u32 { self.A = self.rrc(self.A); return 8; }
+    
+    // RL r (0x10-0x17)
+    fn op_cb_rl_b(self: *CPU, _: *SystemBus) !u32 { self.B = self.rl(self.B); return 8; }
+    fn op_cb_rl_c(self: *CPU, _: *SystemBus) !u32 { self.C = self.rl(self.C); return 8; }
+    fn op_cb_rl_d(self: *CPU, _: *SystemBus) !u32 { self.D = self.rl(self.D); return 8; }
+    fn op_cb_rl_e(self: *CPU, _: *SystemBus) !u32 { self.E = self.rl(self.E); return 8; }
+    fn op_cb_rl_h(self: *CPU, _: *SystemBus) !u32 { self.H = self.rl(self.H); return 8; }
+    fn op_cb_rl_l(self: *CPU, _: *SystemBus) !u32 { self.L = self.rl(self.L); return 8; }
+    fn op_cb_rl_hl(self: *CPU, bus: *SystemBus) !u32 {
+        const addr = get16BitRegister(self.H, self.L);
+        const val = try bus.read(addr);
+        try bus.write(addr, self.rl(val));
+        return 16;
+    }
+    fn op_cb_rl_a(self: *CPU, _: *SystemBus) !u32 { self.A = self.rl(self.A); return 8; }
+    
+    // RR r (0x18-0x1F)
+    fn op_cb_rr_b(self: *CPU, _: *SystemBus) !u32 { self.B = self.rr(self.B); return 8; }
+    fn op_cb_rr_c(self: *CPU, _: *SystemBus) !u32 { self.C = self.rr(self.C); return 8; }
+    fn op_cb_rr_d(self: *CPU, _: *SystemBus) !u32 { self.D = self.rr(self.D); return 8; }
+    fn op_cb_rr_e(self: *CPU, _: *SystemBus) !u32 { self.E = self.rr(self.E); return 8; }
+    fn op_cb_rr_h(self: *CPU, _: *SystemBus) !u32 { self.H = self.rr(self.H); return 8; }
+    fn op_cb_rr_l(self: *CPU, _: *SystemBus) !u32 { self.L = self.rr(self.L); return 8; }
+    fn op_cb_rr_hl(self: *CPU, bus: *SystemBus) !u32 {
+        const addr = get16BitRegister(self.H, self.L);
+        const val = try bus.read(addr);
+        try bus.write(addr, self.rr(val));
+        return 16;
+    }
+    fn op_cb_rr_a(self: *CPU, _: *SystemBus) !u32 { self.A = self.rr(self.A); return 8; }
+    
+    // SLA r (0x20-0x27)
+    fn op_cb_sla_b(self: *CPU, _: *SystemBus) !u32 { self.B = self.sla(self.B); return 8; }
+    fn op_cb_sla_c(self: *CPU, _: *SystemBus) !u32 { self.C = self.sla(self.C); return 8; }
+    fn op_cb_sla_d(self: *CPU, _: *SystemBus) !u32 { self.D = self.sla(self.D); return 8; }
+    fn op_cb_sla_e(self: *CPU, _: *SystemBus) !u32 { self.E = self.sla(self.E); return 8; }
+    fn op_cb_sla_h(self: *CPU, _: *SystemBus) !u32 { self.H = self.sla(self.H); return 8; }
+    fn op_cb_sla_l(self: *CPU, _: *SystemBus) !u32 { self.L = self.sla(self.L); return 8; }
+    fn op_cb_sla_hl(self: *CPU, bus: *SystemBus) !u32 {
+        const addr = get16BitRegister(self.H, self.L);
+        const val = try bus.read(addr);
+        try bus.write(addr, self.sla(val));
+        return 16;
+    }
+    fn op_cb_sla_a(self: *CPU, _: *SystemBus) !u32 { self.A = self.sla(self.A); return 8; }
+    
+    // SRA r (0x28-0x2F)
+    fn op_cb_sra_b(self: *CPU, _: *SystemBus) !u32 { self.B = self.sra(self.B); return 8; }
+    fn op_cb_sra_c(self: *CPU, _: *SystemBus) !u32 { self.C = self.sra(self.C); return 8; }
+    fn op_cb_sra_d(self: *CPU, _: *SystemBus) !u32 { self.D = self.sra(self.D); return 8; }
+    fn op_cb_sra_e(self: *CPU, _: *SystemBus) !u32 { self.E = self.sra(self.E); return 8; }
+    fn op_cb_sra_h(self: *CPU, _: *SystemBus) !u32 { self.H = self.sra(self.H); return 8; }
+    fn op_cb_sra_l(self: *CPU, _: *SystemBus) !u32 { self.L = self.sra(self.L); return 8; }
+    fn op_cb_sra_hl(self: *CPU, bus: *SystemBus) !u32 {
+        const addr = get16BitRegister(self.H, self.L);
+        const val = try bus.read(addr);
+        try bus.write(addr, self.sra(val));
+        return 16;
+    }
+    fn op_cb_sra_a(self: *CPU, _: *SystemBus) !u32 { self.A = self.sra(self.A); return 8; }
+    
+    // SWAP r (0x30-0x37)
+    fn op_cb_swap_b(self: *CPU, _: *SystemBus) !u32 { self.B = self.swap(self.B); return 8; }
+    fn op_cb_swap_c(self: *CPU, _: *SystemBus) !u32 { self.C = self.swap(self.C); return 8; }
+    fn op_cb_swap_d(self: *CPU, _: *SystemBus) !u32 { self.D = self.swap(self.D); return 8; }
+    fn op_cb_swap_e(self: *CPU, _: *SystemBus) !u32 { self.E = self.swap(self.E); return 8; }
+    fn op_cb_swap_h(self: *CPU, _: *SystemBus) !u32 { self.H = self.swap(self.H); return 8; }
+    fn op_cb_swap_l(self: *CPU, _: *SystemBus) !u32 { self.L = self.swap(self.L); return 8; }
+    fn op_cb_swap_hl(self: *CPU, bus: *SystemBus) !u32 {
+        const addr = get16BitRegister(self.H, self.L);
+        const val = try bus.read(addr);
+        try bus.write(addr, self.swap(val));
+        return 16;
+    }
+    fn op_cb_swap_a(self: *CPU, _: *SystemBus) !u32 { self.A = self.swap(self.A); return 8; }
+    
+    // SRL r (0x38-0x3F)
+    fn op_cb_srl_b(self: *CPU, _: *SystemBus) !u32 { self.B = self.srl(self.B); return 8; }
+    fn op_cb_srl_c(self: *CPU, _: *SystemBus) !u32 { self.C = self.srl(self.C); return 8; }
+    fn op_cb_srl_d(self: *CPU, _: *SystemBus) !u32 { self.D = self.srl(self.D); return 8; }
+    fn op_cb_srl_e(self: *CPU, _: *SystemBus) !u32 { self.E = self.srl(self.E); return 8; }
+    fn op_cb_srl_h(self: *CPU, _: *SystemBus) !u32 { self.H = self.srl(self.H); return 8; }
+    fn op_cb_srl_l(self: *CPU, _: *SystemBus) !u32 { self.L = self.srl(self.L); return 8; }
+    fn op_cb_srl_hl(self: *CPU, bus: *SystemBus) !u32 {
+        const addr = get16BitRegister(self.H, self.L);
+        const val = try bus.read(addr);
+        try bus.write(addr, self.srl(val));
+        return 16;
+    }
+    fn op_cb_srl_a(self: *CPU, _: *SystemBus) !u32 { self.A = self.srl(self.A); return 8; }
+    
+    // BIT b,r (0x40-0x7F) - 64 instructions (8 bits × 8 registers)
+    // BIT 0
+    fn op_cb_bit_0_b(self: *CPU, _: *SystemBus) !u32 { self.bit(self.B, 0); return 8; }
+    fn op_cb_bit_0_c(self: *CPU, _: *SystemBus) !u32 { self.bit(self.C, 0); return 8; }
+    fn op_cb_bit_0_d(self: *CPU, _: *SystemBus) !u32 { self.bit(self.D, 0); return 8; }
+    fn op_cb_bit_0_e(self: *CPU, _: *SystemBus) !u32 { self.bit(self.E, 0); return 8; }
+    fn op_cb_bit_0_h(self: *CPU, _: *SystemBus) !u32 { self.bit(self.H, 0); return 8; }
+    fn op_cb_bit_0_l(self: *CPU, _: *SystemBus) !u32 { self.bit(self.L, 0); return 8; }
+    fn op_cb_bit_0_hl(self: *CPU, bus: *SystemBus) !u32 { self.bit(try bus.read(get16BitRegister(self.H, self.L)), 0); return 12; }
+    fn op_cb_bit_0_a(self: *CPU, _: *SystemBus) !u32 { self.bit(self.A, 0); return 8; }
+    
+    // BIT 1
+    fn op_cb_bit_1_b(self: *CPU, _: *SystemBus) !u32 { self.bit(self.B, 1); return 8; }
+    fn op_cb_bit_1_c(self: *CPU, _: *SystemBus) !u32 { self.bit(self.C, 1); return 8; }
+    fn op_cb_bit_1_d(self: *CPU, _: *SystemBus) !u32 { self.bit(self.D, 1); return 8; }
+    fn op_cb_bit_1_e(self: *CPU, _: *SystemBus) !u32 { self.bit(self.E, 1); return 8; }
+    fn op_cb_bit_1_h(self: *CPU, _: *SystemBus) !u32 { self.bit(self.H, 1); return 8; }
+    fn op_cb_bit_1_l(self: *CPU, _: *SystemBus) !u32 { self.bit(self.L, 1); return 8; }
+    fn op_cb_bit_1_hl(self: *CPU, bus: *SystemBus) !u32 { self.bit(try bus.read(get16BitRegister(self.H, self.L)), 1); return 12; }
+    fn op_cb_bit_1_a(self: *CPU, _: *SystemBus) !u32 { self.bit(self.A, 1); return 8; }
+    
+    // BIT 2
+    fn op_cb_bit_2_b(self: *CPU, _: *SystemBus) !u32 { self.bit(self.B, 2); return 8; }
+    fn op_cb_bit_2_c(self: *CPU, _: *SystemBus) !u32 { self.bit(self.C, 2); return 8; }
+    fn op_cb_bit_2_d(self: *CPU, _: *SystemBus) !u32 { self.bit(self.D, 2); return 8; }
+    fn op_cb_bit_2_e(self: *CPU, _: *SystemBus) !u32 { self.bit(self.E, 2); return 8; }
+    fn op_cb_bit_2_h(self: *CPU, _: *SystemBus) !u32 { self.bit(self.H, 2); return 8; }
+    fn op_cb_bit_2_l(self: *CPU, _: *SystemBus) !u32 { self.bit(self.L, 2); return 8; }
+    fn op_cb_bit_2_hl(self: *CPU, bus: *SystemBus) !u32 { self.bit(try bus.read(get16BitRegister(self.H, self.L)), 2); return 12; }
+    fn op_cb_bit_2_a(self: *CPU, _: *SystemBus) !u32 { self.bit(self.A, 2); return 8; }
+    
+    // BIT 3
+    fn op_cb_bit_3_b(self: *CPU, _: *SystemBus) !u32 { self.bit(self.B, 3); return 8; }
+    fn op_cb_bit_3_c(self: *CPU, _: *SystemBus) !u32 { self.bit(self.C, 3); return 8; }
+    fn op_cb_bit_3_d(self: *CPU, _: *SystemBus) !u32 { self.bit(self.D, 3); return 8; }
+    fn op_cb_bit_3_e(self: *CPU, _: *SystemBus) !u32 { self.bit(self.E, 3); return 8; }
+    fn op_cb_bit_3_h(self: *CPU, _: *SystemBus) !u32 { self.bit(self.H, 3); return 8; }
+    fn op_cb_bit_3_l(self: *CPU, _: *SystemBus) !u32 { self.bit(self.L, 3); return 8; }
+    fn op_cb_bit_3_hl(self: *CPU, bus: *SystemBus) !u32 { self.bit(try bus.read(get16BitRegister(self.H, self.L)), 3); return 12; }
+    fn op_cb_bit_3_a(self: *CPU, _: *SystemBus) !u32 { self.bit(self.A, 3); return 8; }
+    
+    // BIT 4
+    fn op_cb_bit_4_b(self: *CPU, _: *SystemBus) !u32 { self.bit(self.B, 4); return 8; }
+    fn op_cb_bit_4_c(self: *CPU, _: *SystemBus) !u32 { self.bit(self.C, 4); return 8; }
+    fn op_cb_bit_4_d(self: *CPU, _: *SystemBus) !u32 { self.bit(self.D, 4); return 8; }
+    fn op_cb_bit_4_e(self: *CPU, _: *SystemBus) !u32 { self.bit(self.E, 4); return 8; }
+    fn op_cb_bit_4_h(self: *CPU, _: *SystemBus) !u32 { self.bit(self.H, 4); return 8; }
+    fn op_cb_bit_4_l(self: *CPU, _: *SystemBus) !u32 { self.bit(self.L, 4); return 8; }
+    fn op_cb_bit_4_hl(self: *CPU, bus: *SystemBus) !u32 { self.bit(try bus.read(get16BitRegister(self.H, self.L)), 4); return 12; }
+    fn op_cb_bit_4_a(self: *CPU, _: *SystemBus) !u32 { self.bit(self.A, 4); return 8; }
+    
+    // BIT 5
+    fn op_cb_bit_5_b(self: *CPU, _: *SystemBus) !u32 { self.bit(self.B, 5); return 8; }
+    fn op_cb_bit_5_c(self: *CPU, _: *SystemBus) !u32 { self.bit(self.C, 5); return 8; }
+    fn op_cb_bit_5_d(self: *CPU, _: *SystemBus) !u32 { self.bit(self.D, 5); return 8; }
+    fn op_cb_bit_5_e(self: *CPU, _: *SystemBus) !u32 { self.bit(self.E, 5); return 8; }
+    fn op_cb_bit_5_h(self: *CPU, _: *SystemBus) !u32 { self.bit(self.H, 5); return 8; }
+    fn op_cb_bit_5_l(self: *CPU, _: *SystemBus) !u32 { self.bit(self.L, 5); return 8; }
+    fn op_cb_bit_5_hl(self: *CPU, bus: *SystemBus) !u32 { self.bit(try bus.read(get16BitRegister(self.H, self.L)), 5); return 12; }
+    fn op_cb_bit_5_a(self: *CPU, _: *SystemBus) !u32 { self.bit(self.A, 5); return 8; }
+    
+    // BIT 6
+    fn op_cb_bit_6_b(self: *CPU, _: *SystemBus) !u32 { self.bit(self.B, 6); return 8; }
+    fn op_cb_bit_6_c(self: *CPU, _: *SystemBus) !u32 { self.bit(self.C, 6); return 8; }
+    fn op_cb_bit_6_d(self: *CPU, _: *SystemBus) !u32 { self.bit(self.D, 6); return 8; }
+    fn op_cb_bit_6_e(self: *CPU, _: *SystemBus) !u32 { self.bit(self.E, 6); return 8; }
+    fn op_cb_bit_6_h(self: *CPU, _: *SystemBus) !u32 { self.bit(self.H, 6); return 8; }
+    fn op_cb_bit_6_l(self: *CPU, _: *SystemBus) !u32 { self.bit(self.L, 6); return 8; }
+    fn op_cb_bit_6_hl(self: *CPU, bus: *SystemBus) !u32 { self.bit(try bus.read(get16BitRegister(self.H, self.L)), 6); return 12; }
+    fn op_cb_bit_6_a(self: *CPU, _: *SystemBus) !u32 { self.bit(self.A, 6); return 8; }
+    
+    // BIT 7
+    fn op_cb_bit_7_b(self: *CPU, _: *SystemBus) !u32 { self.bit(self.B, 7); return 8; }
+    fn op_cb_bit_7_c(self: *CPU, _: *SystemBus) !u32 { self.bit(self.C, 7); return 8; }
+    fn op_cb_bit_7_d(self: *CPU, _: *SystemBus) !u32 { self.bit(self.D, 7); return 8; }
+    fn op_cb_bit_7_e(self: *CPU, _: *SystemBus) !u32 { self.bit(self.E, 7); return 8; }
+    fn op_cb_bit_7_h(self: *CPU, _: *SystemBus) !u32 { self.bit(self.H, 7); return 8; }
+    fn op_cb_bit_7_l(self: *CPU, _: *SystemBus) !u32 { self.bit(self.L, 7); return 8; }
+    fn op_cb_bit_7_hl(self: *CPU, bus: *SystemBus) !u32 { self.bit(try bus.read(get16BitRegister(self.H, self.L)), 7); return 12; }
+    fn op_cb_bit_7_a(self: *CPU, _: *SystemBus) !u32 { self.bit(self.A, 7); return 8; }
+    
+    // RES b,r (0x80-0xBF) - 64 instructions
+    // RES 0
+    fn op_cb_res_0_b(self: *CPU, _: *SystemBus) !u32 { self.B = res(self.B, 0); return 8; }
+    fn op_cb_res_0_c(self: *CPU, _: *SystemBus) !u32 { self.C = res(self.C, 0); return 8; }
+    fn op_cb_res_0_d(self: *CPU, _: *SystemBus) !u32 { self.D = res(self.D, 0); return 8; }
+    fn op_cb_res_0_e(self: *CPU, _: *SystemBus) !u32 { self.E = res(self.E, 0); return 8; }
+    fn op_cb_res_0_h(self: *CPU, _: *SystemBus) !u32 { self.H = res(self.H, 0); return 8; }
+    fn op_cb_res_0_l(self: *CPU, _: *SystemBus) !u32 { self.L = res(self.L, 0); return 8; }
+    fn op_cb_res_0_hl(self: *CPU, bus: *SystemBus) !u32 {
+        const addr = get16BitRegister(self.H, self.L);
+        try bus.write(addr, res(try bus.read(addr), 0));
+        return 16;
+    }
+    fn op_cb_res_0_a(self: *CPU, _: *SystemBus) !u32 { self.A = res(self.A, 0); return 8; }
+    
+    // RES 1
+    fn op_cb_res_1_b(self: *CPU, _: *SystemBus) !u32 { self.B = res(self.B, 1); return 8; }
+    fn op_cb_res_1_c(self: *CPU, _: *SystemBus) !u32 { self.C = res(self.C, 1); return 8; }
+    fn op_cb_res_1_d(self: *CPU, _: *SystemBus) !u32 { self.D = res(self.D, 1); return 8; }
+    fn op_cb_res_1_e(self: *CPU, _: *SystemBus) !u32 { self.E = res(self.E, 1); return 8; }
+    fn op_cb_res_1_h(self: *CPU, _: *SystemBus) !u32 { self.H = res(self.H, 1); return 8; }
+    fn op_cb_res_1_l(self: *CPU, _: *SystemBus) !u32 { self.L = res(self.L, 1); return 8; }
+    fn op_cb_res_1_hl(self: *CPU, bus: *SystemBus) !u32 {
+        const addr = get16BitRegister(self.H, self.L);
+        try bus.write(addr, res(try bus.read(addr), 1));
+        return 16;
+    }
+    fn op_cb_res_1_a(self: *CPU, _: *SystemBus) !u32 { self.A = res(self.A, 1); return 8; }
+    
+    // RES 2
+    fn op_cb_res_2_b(self: *CPU, _: *SystemBus) !u32 { self.B = res(self.B, 2); return 8; }
+    fn op_cb_res_2_c(self: *CPU, _: *SystemBus) !u32 { self.C = res(self.C, 2); return 8; }
+    fn op_cb_res_2_d(self: *CPU, _: *SystemBus) !u32 { self.D = res(self.D, 2); return 8; }
+    fn op_cb_res_2_e(self: *CPU, _: *SystemBus) !u32 { self.E = res(self.E, 2); return 8; }
+    fn op_cb_res_2_h(self: *CPU, _: *SystemBus) !u32 { self.H = res(self.H, 2); return 8; }
+    fn op_cb_res_2_l(self: *CPU, _: *SystemBus) !u32 { self.L = res(self.L, 2); return 8; }
+    fn op_cb_res_2_hl(self: *CPU, bus: *SystemBus) !u32 {
+        const addr = get16BitRegister(self.H, self.L);
+        try bus.write(addr, res(try bus.read(addr), 2));
+        return 16;
+    }
+    fn op_cb_res_2_a(self: *CPU, _: *SystemBus) !u32 { self.A = res(self.A, 2); return 8; }
+    
+    // RES 3
+    fn op_cb_res_3_b(self: *CPU, _: *SystemBus) !u32 { self.B = res(self.B, 3); return 8; }
+    fn op_cb_res_3_c(self: *CPU, _: *SystemBus) !u32 { self.C = res(self.C, 3); return 8; }
+    fn op_cb_res_3_d(self: *CPU, _: *SystemBus) !u32 { self.D = res(self.D, 3); return 8; }
+    fn op_cb_res_3_e(self: *CPU, _: *SystemBus) !u32 { self.E = res(self.E, 3); return 8; }
+    fn op_cb_res_3_h(self: *CPU, _: *SystemBus) !u32 { self.H = res(self.H, 3); return 8; }
+    fn op_cb_res_3_l(self: *CPU, _: *SystemBus) !u32 { self.L = res(self.L, 3); return 8; }
+    fn op_cb_res_3_hl(self: *CPU, bus: *SystemBus) !u32 {
+        const addr = get16BitRegister(self.H, self.L);
+        try bus.write(addr, res(try bus.read(addr), 3));
+        return 16;
+    }
+    fn op_cb_res_3_a(self: *CPU, _: *SystemBus) !u32 { self.A = res(self.A, 3); return 8; }
+    
+    // RES 4
+    fn op_cb_res_4_b(self: *CPU, _: *SystemBus) !u32 { self.B = res(self.B, 4); return 8; }
+    fn op_cb_res_4_c(self: *CPU, _: *SystemBus) !u32 { self.C = res(self.C, 4); return 8; }
+    fn op_cb_res_4_d(self: *CPU, _: *SystemBus) !u32 { self.D = res(self.D, 4); return 8; }
+    fn op_cb_res_4_e(self: *CPU, _: *SystemBus) !u32 { self.E = res(self.E, 4); return 8; }
+    fn op_cb_res_4_h(self: *CPU, _: *SystemBus) !u32 { self.H = res(self.H, 4); return 8; }
+    fn op_cb_res_4_l(self: *CPU, _: *SystemBus) !u32 { self.L = res(self.L, 4); return 8; }
+    fn op_cb_res_4_hl(self: *CPU, bus: *SystemBus) !u32 {
+        const addr = get16BitRegister(self.H, self.L);
+        try bus.write(addr, res(try bus.read(addr), 4));
+        return 16;
+    }
+    fn op_cb_res_4_a(self: *CPU, _: *SystemBus) !u32 { self.A = res(self.A, 4); return 8; }
+    
+    // RES 5
+    fn op_cb_res_5_b(self: *CPU, _: *SystemBus) !u32 { self.B = res(self.B, 5); return 8; }
+    fn op_cb_res_5_c(self: *CPU, _: *SystemBus) !u32 { self.C = res(self.C, 5); return 8; }
+    fn op_cb_res_5_d(self: *CPU, _: *SystemBus) !u32 { self.D = res(self.D, 5); return 8; }
+    fn op_cb_res_5_e(self: *CPU, _: *SystemBus) !u32 { self.E = res(self.E, 5); return 8; }
+    fn op_cb_res_5_h(self: *CPU, _: *SystemBus) !u32 { self.H = res(self.H, 5); return 8; }
+    fn op_cb_res_5_l(self: *CPU, _: *SystemBus) !u32 { self.L = res(self.L, 5); return 8; }
+    fn op_cb_res_5_hl(self: *CPU, bus: *SystemBus) !u32 {
+        const addr = get16BitRegister(self.H, self.L);
+        try bus.write(addr, res(try bus.read(addr), 5));
+        return 16;
+    }
+    fn op_cb_res_5_a(self: *CPU, _: *SystemBus) !u32 { self.A = res(self.A, 5); return 8; }
+    
+    // RES 6
+    fn op_cb_res_6_b(self: *CPU, _: *SystemBus) !u32 { self.B = res(self.B, 6); return 8; }
+    fn op_cb_res_6_c(self: *CPU, _: *SystemBus) !u32 { self.C = res(self.C, 6); return 8; }
+    fn op_cb_res_6_d(self: *CPU, _: *SystemBus) !u32 { self.D = res(self.D, 6); return 8; }
+    fn op_cb_res_6_e(self: *CPU, _: *SystemBus) !u32 { self.E = res(self.E, 6); return 8; }
+    fn op_cb_res_6_h(self: *CPU, _: *SystemBus) !u32 { self.H = res(self.H, 6); return 8; }
+    fn op_cb_res_6_l(self: *CPU, _: *SystemBus) !u32 { self.L = res(self.L, 6); return 8; }
+    fn op_cb_res_6_hl(self: *CPU, bus: *SystemBus) !u32 {
+        const addr = get16BitRegister(self.H, self.L);
+        try bus.write(addr, res(try bus.read(addr), 6));
+        return 16;
+    }
+    fn op_cb_res_6_a(self: *CPU, _: *SystemBus) !u32 { self.A = res(self.A, 6); return 8; }
+    
+    // RES 7
+    fn op_cb_res_7_b(self: *CPU, _: *SystemBus) !u32 { self.B = res(self.B, 7); return 8; }
+    fn op_cb_res_7_c(self: *CPU, _: *SystemBus) !u32 { self.C = res(self.C, 7); return 8; }
+    fn op_cb_res_7_d(self: *CPU, _: *SystemBus) !u32 { self.D = res(self.D, 7); return 8; }
+    fn op_cb_res_7_e(self: *CPU, _: *SystemBus) !u32 { self.E = res(self.E, 7); return 8; }
+    fn op_cb_res_7_h(self: *CPU, _: *SystemBus) !u32 { self.H = res(self.H, 7); return 8; }
+    fn op_cb_res_7_l(self: *CPU, _: *SystemBus) !u32 { self.L = res(self.L, 7); return 8; }
+    fn op_cb_res_7_hl(self: *CPU, bus: *SystemBus) !u32 {
+        const addr = get16BitRegister(self.H, self.L);
+        try bus.write(addr, res(try bus.read(addr), 7));
+        return 16;
+    }
+    fn op_cb_res_7_a(self: *CPU, _: *SystemBus) !u32 { self.A = res(self.A, 7); return 8; }
+    
+    // SET b,r (0xC0-0xFF) - 64 instructions
+    // SET 0
+    fn op_cb_set_0_b(self: *CPU, _: *SystemBus) !u32 { self.B = set(self.B, 0); return 8; }
+    fn op_cb_set_0_c(self: *CPU, _: *SystemBus) !u32 { self.C = set(self.C, 0); return 8; }
+    fn op_cb_set_0_d(self: *CPU, _: *SystemBus) !u32 { self.D = set(self.D, 0); return 8; }
+    fn op_cb_set_0_e(self: *CPU, _: *SystemBus) !u32 { self.E = set(self.E, 0); return 8; }
+    fn op_cb_set_0_h(self: *CPU, _: *SystemBus) !u32 { self.H = set(self.H, 0); return 8; }
+    fn op_cb_set_0_l(self: *CPU, _: *SystemBus) !u32 { self.L = set(self.L, 0); return 8; }
+    fn op_cb_set_0_hl(self: *CPU, bus: *SystemBus) !u32 {
+        const addr = get16BitRegister(self.H, self.L);
+        try bus.write(addr, set(try bus.read(addr), 0));
+        return 16;
+    }
+    fn op_cb_set_0_a(self: *CPU, _: *SystemBus) !u32 { self.A = set(self.A, 0); return 8; }
+    
+    // SET 1
+    fn op_cb_set_1_b(self: *CPU, _: *SystemBus) !u32 { self.B = set(self.B, 1); return 8; }
+    fn op_cb_set_1_c(self: *CPU, _: *SystemBus) !u32 { self.C = set(self.C, 1); return 8; }
+    fn op_cb_set_1_d(self: *CPU, _: *SystemBus) !u32 { self.D = set(self.D, 1); return 8; }
+    fn op_cb_set_1_e(self: *CPU, _: *SystemBus) !u32 { self.E = set(self.E, 1); return 8; }
+    fn op_cb_set_1_h(self: *CPU, _: *SystemBus) !u32 { self.H = set(self.H, 1); return 8; }
+    fn op_cb_set_1_l(self: *CPU, _: *SystemBus) !u32 { self.L = set(self.L, 1); return 8; }
+    fn op_cb_set_1_hl(self: *CPU, bus: *SystemBus) !u32 {
+        const addr = get16BitRegister(self.H, self.L);
+        try bus.write(addr, set(try bus.read(addr), 1));
+        return 16;
+    }
+    fn op_cb_set_1_a(self: *CPU, _: *SystemBus) !u32 { self.A = set(self.A, 1); return 8; }
+    
+    // SET 2
+    fn op_cb_set_2_b(self: *CPU, _: *SystemBus) !u32 { self.B = set(self.B, 2); return 8; }
+    fn op_cb_set_2_c(self: *CPU, _: *SystemBus) !u32 { self.C = set(self.C, 2); return 8; }
+    fn op_cb_set_2_d(self: *CPU, _: *SystemBus) !u32 { self.D = set(self.D, 2); return 8; }
+    fn op_cb_set_2_e(self: *CPU, _: *SystemBus) !u32 { self.E = set(self.E, 2); return 8; }
+    fn op_cb_set_2_h(self: *CPU, _: *SystemBus) !u32 { self.H = set(self.H, 2); return 8; }
+    fn op_cb_set_2_l(self: *CPU, _: *SystemBus) !u32 { self.L = set(self.L, 2); return 8; }
+    fn op_cb_set_2_hl(self: *CPU, bus: *SystemBus) !u32 {
+        const addr = get16BitRegister(self.H, self.L);
+        try bus.write(addr, set(try bus.read(addr), 2));
+        return 16;
+    }
+    fn op_cb_set_2_a(self: *CPU, _: *SystemBus) !u32 { self.A = set(self.A, 2); return 8; }
+    
+    // SET 3
+    fn op_cb_set_3_b(self: *CPU, _: *SystemBus) !u32 { self.B = set(self.B, 3); return 8; }
+    fn op_cb_set_3_c(self: *CPU, _: *SystemBus) !u32 { self.C = set(self.C, 3); return 8; }
+    fn op_cb_set_3_d(self: *CPU, _: *SystemBus) !u32 { self.D = set(self.D, 3); return 8; }
+    fn op_cb_set_3_e(self: *CPU, _: *SystemBus) !u32 { self.E = set(self.E, 3); return 8; }
+    fn op_cb_set_3_h(self: *CPU, _: *SystemBus) !u32 { self.H = set(self.H, 3); return 8; }
+    fn op_cb_set_3_l(self: *CPU, _: *SystemBus) !u32 { self.L = set(self.L, 3); return 8; }
+    fn op_cb_set_3_hl(self: *CPU, bus: *SystemBus) !u32 {
+        const addr = get16BitRegister(self.H, self.L);
+        try bus.write(addr, set(try bus.read(addr), 3));
+        return 16;
+    }
+    fn op_cb_set_3_a(self: *CPU, _: *SystemBus) !u32 { self.A = set(self.A, 3); return 8; }
+    
+    // SET 4
+    fn op_cb_set_4_b(self: *CPU, _: *SystemBus) !u32 { self.B = set(self.B, 4); return 8; }
+    fn op_cb_set_4_c(self: *CPU, _: *SystemBus) !u32 { self.C = set(self.C, 4); return 8; }
+    fn op_cb_set_4_d(self: *CPU, _: *SystemBus) !u32 { self.D = set(self.D, 4); return 8; }
+    fn op_cb_set_4_e(self: *CPU, _: *SystemBus) !u32 { self.E = set(self.E, 4); return 8; }
+    fn op_cb_set_4_h(self: *CPU, _: *SystemBus) !u32 { self.H = set(self.H, 4); return 8; }
+    fn op_cb_set_4_l(self: *CPU, _: *SystemBus) !u32 { self.L = set(self.L, 4); return 8; }
+    fn op_cb_set_4_hl(self: *CPU, bus: *SystemBus) !u32 {
+        const addr = get16BitRegister(self.H, self.L);
+        try bus.write(addr, set(try bus.read(addr), 4));
+        return 16;
+    }
+    fn op_cb_set_4_a(self: *CPU, _: *SystemBus) !u32 { self.A = set(self.A, 4); return 8; }
+    
+    // SET 5
+    fn op_cb_set_5_b(self: *CPU, _: *SystemBus) !u32 { self.B = set(self.B, 5); return 8; }
+    fn op_cb_set_5_c(self: *CPU, _: *SystemBus) !u32 { self.C = set(self.C, 5); return 8; }
+    fn op_cb_set_5_d(self: *CPU, _: *SystemBus) !u32 { self.D = set(self.D, 5); return 8; }
+    fn op_cb_set_5_e(self: *CPU, _: *SystemBus) !u32 { self.E = set(self.E, 5); return 8; }
+    fn op_cb_set_5_h(self: *CPU, _: *SystemBus) !u32 { self.H = set(self.H, 5); return 8; }
+    fn op_cb_set_5_l(self: *CPU, _: *SystemBus) !u32 { self.L = set(self.L, 5); return 8; }
+    fn op_cb_set_5_hl(self: *CPU, bus: *SystemBus) !u32 {
+        const addr = get16BitRegister(self.H, self.L);
+        try bus.write(addr, set(try bus.read(addr), 5));
+        return 16;
+    }
+    fn op_cb_set_5_a(self: *CPU, _: *SystemBus) !u32 { self.A = set(self.A, 5); return 8; }
+    
+    // SET 6
+    fn op_cb_set_6_b(self: *CPU, _: *SystemBus) !u32 { self.B = set(self.B, 6); return 8; }
+    fn op_cb_set_6_c(self: *CPU, _: *SystemBus) !u32 { self.C = set(self.C, 6); return 8; }
+    fn op_cb_set_6_d(self: *CPU, _: *SystemBus) !u32 { self.D = set(self.D, 6); return 8; }
+    fn op_cb_set_6_e(self: *CPU, _: *SystemBus) !u32 { self.E = set(self.E, 6); return 8; }
+    fn op_cb_set_6_h(self: *CPU, _: *SystemBus) !u32 { self.H = set(self.H, 6); return 8; }
+    fn op_cb_set_6_l(self: *CPU, _: *SystemBus) !u32 { self.L = set(self.L, 6); return 8; }
+    fn op_cb_set_6_hl(self: *CPU, bus: *SystemBus) !u32 {
+        const addr = get16BitRegister(self.H, self.L);
+        try bus.write(addr, set(try bus.read(addr), 6));
+        return 16;
+    }
+    fn op_cb_set_6_a(self: *CPU, _: *SystemBus) !u32 { self.A = set(self.A, 6); return 8; }
+    
+    // SET 7
+    fn op_cb_set_7_b(self: *CPU, _: *SystemBus) !u32 { self.B = set(self.B, 7); return 8; }
+    fn op_cb_set_7_c(self: *CPU, _: *SystemBus) !u32 { self.C = set(self.C, 7); return 8; }
+    fn op_cb_set_7_d(self: *CPU, _: *SystemBus) !u32 { self.D = set(self.D, 7); return 8; }
+    fn op_cb_set_7_e(self: *CPU, _: *SystemBus) !u32 { self.E = set(self.E, 7); return 8; }
+    fn op_cb_set_7_h(self: *CPU, _: *SystemBus) !u32 { self.H = set(self.H, 7); return 8; }
+    fn op_cb_set_7_l(self: *CPU, _: *SystemBus) !u32 { self.L = set(self.L, 7); return 8; }
+    fn op_cb_set_7_hl(self: *CPU, bus: *SystemBus) !u32 {
+        const addr = get16BitRegister(self.H, self.L);
+        try bus.write(addr, set(try bus.read(addr), 7));
+        return 16;
+    }
+    fn op_cb_set_7_a(self: *CPU, _: *SystemBus) !u32 { self.A = set(self.A, 7); return 8; }
+
     // Unimplemented opcode handler
     fn op_unimplemented(self: *CPU, system_bus: *SystemBus) !u32 {
-        _ = self;
-        _ = system_bus;
+        const val = try system_bus.read(self.PC - 1);
+        std.debug.print("Unimplemented Opcode is: {d}, called @ {d}\n", .{ val, self.PC });
         return error.UnimplementedOpcode;
     }
+
+    // ==================== CB Opcode Lookup Table ====================
+    
+    const CB_OPCODE_TABLE = init: {
+        var table: [256]Instruction = undefined;
+
+        // RLC (0x00-0x07)
+        table[0x00] = .{ .handler = op_cb_rlc_b, .mnemonic = "RLC B" };
+        table[0x01] = .{ .handler = op_cb_rlc_c, .mnemonic = "RLC C" };
+        table[0x02] = .{ .handler = op_cb_rlc_d, .mnemonic = "RLC D" };
+        table[0x03] = .{ .handler = op_cb_rlc_e, .mnemonic = "RLC E" };
+        table[0x04] = .{ .handler = op_cb_rlc_h, .mnemonic = "RLC H" };
+        table[0x05] = .{ .handler = op_cb_rlc_l, .mnemonic = "RLC L" };
+        table[0x06] = .{ .handler = op_cb_rlc_hl, .mnemonic = "RLC (HL)" };
+        table[0x07] = .{ .handler = op_cb_rlc_a, .mnemonic = "RLC A" };
+        
+        // RRC (0x08-0x0F)
+        table[0x08] = .{ .handler = op_cb_rrc_b, .mnemonic = "RRC B" };
+        table[0x09] = .{ .handler = op_cb_rrc_c, .mnemonic = "RRC C" };
+        table[0x0A] = .{ .handler = op_cb_rrc_d, .mnemonic = "RRC D" };
+        table[0x0B] = .{ .handler = op_cb_rrc_e, .mnemonic = "RRC E" };
+        table[0x0C] = .{ .handler = op_cb_rrc_h, .mnemonic = "RRC H" };
+        table[0x0D] = .{ .handler = op_cb_rrc_l, .mnemonic = "RRC L" };
+        table[0x0E] = .{ .handler = op_cb_rrc_hl, .mnemonic = "RRC (HL)" };
+        table[0x0F] = .{ .handler = op_cb_rrc_a, .mnemonic = "RRC A" };
+        
+        // RL (0x10-0x17)
+        table[0x10] = .{ .handler = op_cb_rl_b, .mnemonic = "RL B" };
+        table[0x11] = .{ .handler = op_cb_rl_c, .mnemonic = "RL C" };
+        table[0x12] = .{ .handler = op_cb_rl_d, .mnemonic = "RL D" };
+        table[0x13] = .{ .handler = op_cb_rl_e, .mnemonic = "RL E" };
+        table[0x14] = .{ .handler = op_cb_rl_h, .mnemonic = "RL H" };
+        table[0x15] = .{ .handler = op_cb_rl_l, .mnemonic = "RL L" };
+        table[0x16] = .{ .handler = op_cb_rl_hl, .mnemonic = "RL (HL)" };
+        table[0x17] = .{ .handler = op_cb_rl_a, .mnemonic = "RL A" };
+        
+        // RR (0x18-0x1F)
+        table[0x18] = .{ .handler = op_cb_rr_b, .mnemonic = "RR B" };
+        table[0x19] = .{ .handler = op_cb_rr_c, .mnemonic = "RR C" };
+        table[0x1A] = .{ .handler = op_cb_rr_d, .mnemonic = "RR D" };
+        table[0x1B] = .{ .handler = op_cb_rr_e, .mnemonic = "RR E" };
+        table[0x1C] = .{ .handler = op_cb_rr_h, .mnemonic = "RR H" };
+        table[0x1D] = .{ .handler = op_cb_rr_l, .mnemonic = "RR L" };
+        table[0x1E] = .{ .handler = op_cb_rr_hl, .mnemonic = "RR (HL)" };
+        table[0x1F] = .{ .handler = op_cb_rr_a, .mnemonic = "RR A" };
+        
+        // SLA (0x20-0x27)
+        table[0x20] = .{ .handler = op_cb_sla_b, .mnemonic = "SLA B" };
+        table[0x21] = .{ .handler = op_cb_sla_c, .mnemonic = "SLA C" };
+        table[0x22] = .{ .handler = op_cb_sla_d, .mnemonic = "SLA D" };
+        table[0x23] = .{ .handler = op_cb_sla_e, .mnemonic = "SLA E" };
+        table[0x24] = .{ .handler = op_cb_sla_h, .mnemonic = "SLA H" };
+        table[0x25] = .{ .handler = op_cb_sla_l, .mnemonic = "SLA L" };
+        table[0x26] = .{ .handler = op_cb_sla_hl, .mnemonic = "SLA (HL)" };
+        table[0x27] = .{ .handler = op_cb_sla_a, .mnemonic = "SLA A" };
+        
+        // SRA (0x28-0x2F)
+        table[0x28] = .{ .handler = op_cb_sra_b, .mnemonic = "SRA B" };
+        table[0x29] = .{ .handler = op_cb_sra_c, .mnemonic = "SRA C" };
+        table[0x2A] = .{ .handler = op_cb_sra_d, .mnemonic = "SRA D" };
+        table[0x2B] = .{ .handler = op_cb_sra_e, .mnemonic = "SRA E" };
+        table[0x2C] = .{ .handler = op_cb_sra_h, .mnemonic = "SRA H" };
+        table[0x2D] = .{ .handler = op_cb_sra_l, .mnemonic = "SRA L" };
+        table[0x2E] = .{ .handler = op_cb_sra_hl, .mnemonic = "SRA (HL)" };
+        table[0x2F] = .{ .handler = op_cb_sra_a, .mnemonic = "SRA A" };
+        
+        // SWAP (0x30-0x37)
+        table[0x30] = .{ .handler = op_cb_swap_b, .mnemonic = "SWAP B" };
+        table[0x31] = .{ .handler = op_cb_swap_c, .mnemonic = "SWAP C" };
+        table[0x32] = .{ .handler = op_cb_swap_d, .mnemonic = "SWAP D" };
+        table[0x33] = .{ .handler = op_cb_swap_e, .mnemonic = "SWAP E" };
+        table[0x34] = .{ .handler = op_cb_swap_h, .mnemonic = "SWAP H" };
+        table[0x35] = .{ .handler = op_cb_swap_l, .mnemonic = "SWAP L" };
+        table[0x36] = .{ .handler = op_cb_swap_hl, .mnemonic = "SWAP (HL)" };
+        table[0x37] = .{ .handler = op_cb_swap_a, .mnemonic = "SWAP A" };
+        
+        // SRL (0x38-0x3F)
+        table[0x38] = .{ .handler = op_cb_srl_b, .mnemonic = "SRL B" };
+        table[0x39] = .{ .handler = op_cb_srl_c, .mnemonic = "SRL C" };
+        table[0x3A] = .{ .handler = op_cb_srl_d, .mnemonic = "SRL D" };
+        table[0x3B] = .{ .handler = op_cb_srl_e, .mnemonic = "SRL E" };
+        table[0x3C] = .{ .handler = op_cb_srl_h, .mnemonic = "SRL H" };
+        table[0x3D] = .{ .handler = op_cb_srl_l, .mnemonic = "SRL L" };
+        table[0x3E] = .{ .handler = op_cb_srl_hl, .mnemonic = "SRL (HL)" };
+        table[0x3F] = .{ .handler = op_cb_srl_a, .mnemonic = "SRL A" };
+        
+        // BIT (0x40-0x7F) - 64 instructions
+        table[0x40] = .{ .handler = op_cb_bit_0_b, .mnemonic = "BIT 0,B" };
+        table[0x41] = .{ .handler = op_cb_bit_0_c, .mnemonic = "BIT 0,C" };
+        table[0x42] = .{ .handler = op_cb_bit_0_d, .mnemonic = "BIT 0,D" };
+        table[0x43] = .{ .handler = op_cb_bit_0_e, .mnemonic = "BIT 0,E" };
+        table[0x44] = .{ .handler = op_cb_bit_0_h, .mnemonic = "BIT 0,H" };
+        table[0x45] = .{ .handler = op_cb_bit_0_l, .mnemonic = "BIT 0,L" };
+        table[0x46] = .{ .handler = op_cb_bit_0_hl, .mnemonic = "BIT 0,(HL)" };
+        table[0x47] = .{ .handler = op_cb_bit_0_a, .mnemonic = "BIT 0,A" };
+        
+        table[0x48] = .{ .handler = op_cb_bit_1_b, .mnemonic = "BIT 1,B" };
+        table[0x49] = .{ .handler = op_cb_bit_1_c, .mnemonic = "BIT 1,C" };
+        table[0x4A] = .{ .handler = op_cb_bit_1_d, .mnemonic = "BIT 1,D" };
+        table[0x4B] = .{ .handler = op_cb_bit_1_e, .mnemonic = "BIT 1,E" };
+        table[0x4C] = .{ .handler = op_cb_bit_1_h, .mnemonic = "BIT 1,H" };
+        table[0x4D] = .{ .handler = op_cb_bit_1_l, .mnemonic = "BIT 1,L" };
+        table[0x4E] = .{ .handler = op_cb_bit_1_hl, .mnemonic = "BIT 1,(HL)" };
+        table[0x4F] = .{ .handler = op_cb_bit_1_a, .mnemonic = "BIT 1,A" };
+        
+        table[0x50] = .{ .handler = op_cb_bit_2_b, .mnemonic = "BIT 2,B" };
+        table[0x51] = .{ .handler = op_cb_bit_2_c, .mnemonic = "BIT 2,C" };
+        table[0x52] = .{ .handler = op_cb_bit_2_d, .mnemonic = "BIT 2,D" };
+        table[0x53] = .{ .handler = op_cb_bit_2_e, .mnemonic = "BIT 2,E" };
+        table[0x54] = .{ .handler = op_cb_bit_2_h, .mnemonic = "BIT 2,H" };
+        table[0x55] = .{ .handler = op_cb_bit_2_l, .mnemonic = "BIT 2,L" };
+        table[0x56] = .{ .handler = op_cb_bit_2_hl, .mnemonic = "BIT 2,(HL)" };
+        table[0x57] = .{ .handler = op_cb_bit_2_a, .mnemonic = "BIT 2,A" };
+        
+        table[0x58] = .{ .handler = op_cb_bit_3_b, .mnemonic = "BIT 3,B" };
+        table[0x59] = .{ .handler = op_cb_bit_3_c, .mnemonic = "BIT 3,C" };
+        table[0x5A] = .{ .handler = op_cb_bit_3_d, .mnemonic = "BIT 3,D" };
+        table[0x5B] = .{ .handler = op_cb_bit_3_e, .mnemonic = "BIT 3,E" };
+        table[0x5C] = .{ .handler = op_cb_bit_3_h, .mnemonic = "BIT 3,H" };
+        table[0x5D] = .{ .handler = op_cb_bit_3_l, .mnemonic = "BIT 3,L" };
+        table[0x5E] = .{ .handler = op_cb_bit_3_hl, .mnemonic = "BIT 3,(HL)" };
+        table[0x5F] = .{ .handler = op_cb_bit_3_a, .mnemonic = "BIT 3,A" };
+        
+        table[0x60] = .{ .handler = op_cb_bit_4_b, .mnemonic = "BIT 4,B" };
+        table[0x61] = .{ .handler = op_cb_bit_4_c, .mnemonic = "BIT 4,C" };
+        table[0x62] = .{ .handler = op_cb_bit_4_d, .mnemonic = "BIT 4,D" };
+        table[0x63] = .{ .handler = op_cb_bit_4_e, .mnemonic = "BIT 4,E" };
+        table[0x64] = .{ .handler = op_cb_bit_4_h, .mnemonic = "BIT 4,H" };
+        table[0x65] = .{ .handler = op_cb_bit_4_l, .mnemonic = "BIT 4,L" };
+        table[0x66] = .{ .handler = op_cb_bit_4_hl, .mnemonic = "BIT 4,(HL)" };
+        table[0x67] = .{ .handler = op_cb_bit_4_a, .mnemonic = "BIT 4,A" };
+        
+        table[0x68] = .{ .handler = op_cb_bit_5_b, .mnemonic = "BIT 5,B" };
+        table[0x69] = .{ .handler = op_cb_bit_5_c, .mnemonic = "BIT 5,C" };
+        table[0x6A] = .{ .handler = op_cb_bit_5_d, .mnemonic = "BIT 5,D" };
+        table[0x6B] = .{ .handler = op_cb_bit_5_e, .mnemonic = "BIT 5,E" };
+        table[0x6C] = .{ .handler = op_cb_bit_5_h, .mnemonic = "BIT 5,H" };
+        table[0x6D] = .{ .handler = op_cb_bit_5_l, .mnemonic = "BIT 5,L" };
+        table[0x6E] = .{ .handler = op_cb_bit_5_hl, .mnemonic = "BIT 5,(HL)" };
+        table[0x6F] = .{ .handler = op_cb_bit_5_a, .mnemonic = "BIT 5,A" };
+        
+        table[0x70] = .{ .handler = op_cb_bit_6_b, .mnemonic = "BIT 6,B" };
+        table[0x71] = .{ .handler = op_cb_bit_6_c, .mnemonic = "BIT 6,C" };
+        table[0x72] = .{ .handler = op_cb_bit_6_d, .mnemonic = "BIT 6,D" };
+        table[0x73] = .{ .handler = op_cb_bit_6_e, .mnemonic = "BIT 6,E" };
+        table[0x74] = .{ .handler = op_cb_bit_6_h, .mnemonic = "BIT 6,H" };
+        table[0x75] = .{ .handler = op_cb_bit_6_l, .mnemonic = "BIT 6,L" };
+        table[0x76] = .{ .handler = op_cb_bit_6_hl, .mnemonic = "BIT 6,(HL)" };
+        table[0x77] = .{ .handler = op_cb_bit_6_a, .mnemonic = "BIT 6,A" };
+        
+        table[0x78] = .{ .handler = op_cb_bit_7_b, .mnemonic = "BIT 7,B" };
+        table[0x79] = .{ .handler = op_cb_bit_7_c, .mnemonic = "BIT 7,C" };
+        table[0x7A] = .{ .handler = op_cb_bit_7_d, .mnemonic = "BIT 7,D" };
+        table[0x7B] = .{ .handler = op_cb_bit_7_e, .mnemonic = "BIT 7,E" };
+        table[0x7C] = .{ .handler = op_cb_bit_7_h, .mnemonic = "BIT 7,H" };
+        table[0x7D] = .{ .handler = op_cb_bit_7_l, .mnemonic = "BIT 7,L" };
+        table[0x7E] = .{ .handler = op_cb_bit_7_hl, .mnemonic = "BIT 7,(HL)" };
+        table[0x7F] = .{ .handler = op_cb_bit_7_a, .mnemonic = "BIT 7,A" };
+        
+        // RES (0x80-0xBF) - 64 instructions
+        table[0x80] = .{ .handler = op_cb_res_0_b, .mnemonic = "RES 0,B" };
+        table[0x81] = .{ .handler = op_cb_res_0_c, .mnemonic = "RES 0,C" };
+        table[0x82] = .{ .handler = op_cb_res_0_d, .mnemonic = "RES 0,D" };
+        table[0x83] = .{ .handler = op_cb_res_0_e, .mnemonic = "RES 0,E" };
+        table[0x84] = .{ .handler = op_cb_res_0_h, .mnemonic = "RES 0,H" };
+        table[0x85] = .{ .handler = op_cb_res_0_l, .mnemonic = "RES 0,L" };
+        table[0x86] = .{ .handler = op_cb_res_0_hl, .mnemonic = "RES 0,(HL)" };
+        table[0x87] = .{ .handler = op_cb_res_0_a, .mnemonic = "RES 0,A" };
+        
+        table[0x88] = .{ .handler = op_cb_res_1_b, .mnemonic = "RES 1,B" };
+        table[0x89] = .{ .handler = op_cb_res_1_c, .mnemonic = "RES 1,C" };
+        table[0x8A] = .{ .handler = op_cb_res_1_d, .mnemonic = "RES 1,D" };
+        table[0x8B] = .{ .handler = op_cb_res_1_e, .mnemonic = "RES 1,E" };
+        table[0x8C] = .{ .handler = op_cb_res_1_h, .mnemonic = "RES 1,H" };
+        table[0x8D] = .{ .handler = op_cb_res_1_l, .mnemonic = "RES 1,L" };
+        table[0x8E] = .{ .handler = op_cb_res_1_hl, .mnemonic = "RES 1,(HL)" };
+        table[0x8F] = .{ .handler = op_cb_res_1_a, .mnemonic = "RES 1,A" };
+        
+        table[0x90] = .{ .handler = op_cb_res_2_b, .mnemonic = "RES 2,B" };
+        table[0x91] = .{ .handler = op_cb_res_2_c, .mnemonic = "RES 2,C" };
+        table[0x92] = .{ .handler = op_cb_res_2_d, .mnemonic = "RES 2,D" };
+        table[0x93] = .{ .handler = op_cb_res_2_e, .mnemonic = "RES 2,E" };
+        table[0x94] = .{ .handler = op_cb_res_2_h, .mnemonic = "RES 2,H" };
+        table[0x95] = .{ .handler = op_cb_res_2_l, .mnemonic = "RES 2,L" };
+        table[0x96] = .{ .handler = op_cb_res_2_hl, .mnemonic = "RES 2,(HL)" };
+        table[0x97] = .{ .handler = op_cb_res_2_a, .mnemonic = "RES 2,A" };
+        
+        table[0x98] = .{ .handler = op_cb_res_3_b, .mnemonic = "RES 3,B" };
+        table[0x99] = .{ .handler = op_cb_res_3_c, .mnemonic = "RES 3,C" };
+        table[0x9A] = .{ .handler = op_cb_res_3_d, .mnemonic = "RES 3,D" };
+        table[0x9B] = .{ .handler = op_cb_res_3_e, .mnemonic = "RES 3,E" };
+        table[0x9C] = .{ .handler = op_cb_res_3_h, .mnemonic = "RES 3,H" };
+        table[0x9D] = .{ .handler = op_cb_res_3_l, .mnemonic = "RES 3,L" };
+        table[0x9E] = .{ .handler = op_cb_res_3_hl, .mnemonic = "RES 3,(HL)" };
+        table[0x9F] = .{ .handler = op_cb_res_3_a, .mnemonic = "RES 3,A" };
+        
+        table[0xA0] = .{ .handler = op_cb_res_4_b, .mnemonic = "RES 4,B" };
+        table[0xA1] = .{ .handler = op_cb_res_4_c, .mnemonic = "RES 4,C" };
+        table[0xA2] = .{ .handler = op_cb_res_4_d, .mnemonic = "RES 4,D" };
+        table[0xA3] = .{ .handler = op_cb_res_4_e, .mnemonic = "RES 4,E" };
+        table[0xA4] = .{ .handler = op_cb_res_4_h, .mnemonic = "RES 4,H" };
+        table[0xA5] = .{ .handler = op_cb_res_4_l, .mnemonic = "RES 4,L" };
+        table[0xA6] = .{ .handler = op_cb_res_4_hl, .mnemonic = "RES 4,(HL)" };
+        table[0xA7] = .{ .handler = op_cb_res_4_a, .mnemonic = "RES 4,A" };
+        
+        table[0xA8] = .{ .handler = op_cb_res_5_b, .mnemonic = "RES 5,B" };
+        table[0xA9] = .{ .handler = op_cb_res_5_c, .mnemonic = "RES 5,C" };
+        table[0xAA] = .{ .handler = op_cb_res_5_d, .mnemonic = "RES 5,D" };
+        table[0xAB] = .{ .handler = op_cb_res_5_e, .mnemonic = "RES 5,E" };
+        table[0xAC] = .{ .handler = op_cb_res_5_h, .mnemonic = "RES 5,H" };
+        table[0xAD] = .{ .handler = op_cb_res_5_l, .mnemonic = "RES 5,L" };
+        table[0xAE] = .{ .handler = op_cb_res_5_hl, .mnemonic = "RES 5,(HL)" };
+        table[0xAF] = .{ .handler = op_cb_res_5_a, .mnemonic = "RES 5,A" };
+        
+        table[0xB0] = .{ .handler = op_cb_res_6_b, .mnemonic = "RES 6,B" };
+        table[0xB1] = .{ .handler = op_cb_res_6_c, .mnemonic = "RES 6,C" };
+        table[0xB2] = .{ .handler = op_cb_res_6_d, .mnemonic = "RES 6,D" };
+        table[0xB3] = .{ .handler = op_cb_res_6_e, .mnemonic = "RES 6,E" };
+        table[0xB4] = .{ .handler = op_cb_res_6_h, .mnemonic = "RES 6,H" };
+        table[0xB5] = .{ .handler = op_cb_res_6_l, .mnemonic = "RES 6,L" };
+        table[0xB6] = .{ .handler = op_cb_res_6_hl, .mnemonic = "RES 6,(HL)" };
+        table[0xB7] = .{ .handler = op_cb_res_6_a, .mnemonic = "RES 6,A" };
+        
+        table[0xB8] = .{ .handler = op_cb_res_7_b, .mnemonic = "RES 7,B" };
+        table[0xB9] = .{ .handler = op_cb_res_7_c, .mnemonic = "RES 7,C" };
+        table[0xBA] = .{ .handler = op_cb_res_7_d, .mnemonic = "RES 7,D" };
+        table[0xBB] = .{ .handler = op_cb_res_7_e, .mnemonic = "RES 7,E" };
+        table[0xBC] = .{ .handler = op_cb_res_7_h, .mnemonic = "RES 7,H" };
+        table[0xBD] = .{ .handler = op_cb_res_7_l, .mnemonic = "RES 7,L" };
+        table[0xBE] = .{ .handler = op_cb_res_7_hl, .mnemonic = "RES 7,(HL)" };
+        table[0xBF] = .{ .handler = op_cb_res_7_a, .mnemonic = "RES 7,A" };
+        
+        // SET (0xC0-0xFF) - 64 instructions
+        table[0xC0] = .{ .handler = op_cb_set_0_b, .mnemonic = "SET 0,B" };
+        table[0xC1] = .{ .handler = op_cb_set_0_c, .mnemonic = "SET 0,C" };
+        table[0xC2] = .{ .handler = op_cb_set_0_d, .mnemonic = "SET 0,D" };
+        table[0xC3] = .{ .handler = op_cb_set_0_e, .mnemonic = "SET 0,E" };
+        table[0xC4] = .{ .handler = op_cb_set_0_h, .mnemonic = "SET 0,H" };
+        table[0xC5] = .{ .handler = op_cb_set_0_l, .mnemonic = "SET 0,L" };
+        table[0xC6] = .{ .handler = op_cb_set_0_hl, .mnemonic = "SET 0,(HL)" };
+        table[0xC7] = .{ .handler = op_cb_set_0_a, .mnemonic = "SET 0,A" };
+        
+        table[0xC8] = .{ .handler = op_cb_set_1_b, .mnemonic = "SET 1,B" };
+        table[0xC9] = .{ .handler = op_cb_set_1_c, .mnemonic = "SET 1,C" };
+        table[0xCA] = .{ .handler = op_cb_set_1_d, .mnemonic = "SET 1,D" };
+        table[0xCB] = .{ .handler = op_cb_set_1_e, .mnemonic = "SET 1,E" };
+        table[0xCC] = .{ .handler = op_cb_set_1_h, .mnemonic = "SET 1,H" };
+        table[0xCD] = .{ .handler = op_cb_set_1_l, .mnemonic = "SET 1,L" };
+        table[0xCE] = .{ .handler = op_cb_set_1_hl, .mnemonic = "SET 1,(HL)" };
+        table[0xCF] = .{ .handler = op_cb_set_1_a, .mnemonic = "SET 1,A" };
+        
+        table[0xD0] = .{ .handler = op_cb_set_2_b, .mnemonic = "SET 2,B" };
+        table[0xD1] = .{ .handler = op_cb_set_2_c, .mnemonic = "SET 2,C" };
+        table[0xD2] = .{ .handler = op_cb_set_2_d, .mnemonic = "SET 2,D" };
+        table[0xD3] = .{ .handler = op_cb_set_2_e, .mnemonic = "SET 2,E" };
+        table[0xD4] = .{ .handler = op_cb_set_2_h, .mnemonic = "SET 2,H" };
+        table[0xD5] = .{ .handler = op_cb_set_2_l, .mnemonic = "SET 2,L" };
+        table[0xD6] = .{ .handler = op_cb_set_2_hl, .mnemonic = "SET 2,(HL)" };
+        table[0xD7] = .{ .handler = op_cb_set_2_a, .mnemonic = "SET 2,A" };
+        
+        table[0xD8] = .{ .handler = op_cb_set_3_b, .mnemonic = "SET 3,B" };
+        table[0xD9] = .{ .handler = op_cb_set_3_c, .mnemonic = "SET 3,C" };
+        table[0xDA] = .{ .handler = op_cb_set_3_d, .mnemonic = "SET 3,D" };
+        table[0xDB] = .{ .handler = op_cb_set_3_e, .mnemonic = "SET 3,E" };
+        table[0xDC] = .{ .handler = op_cb_set_3_h, .mnemonic = "SET 3,H" };
+        table[0xDD] = .{ .handler = op_cb_set_3_l, .mnemonic = "SET 3,L" };
+        table[0xDE] = .{ .handler = op_cb_set_3_hl, .mnemonic = "SET 3,(HL)" };
+        table[0xDF] = .{ .handler = op_cb_set_3_a, .mnemonic = "SET 3,A" };
+        
+        table[0xE0] = .{ .handler = op_cb_set_4_b, .mnemonic = "SET 4,B" };
+        table[0xE1] = .{ .handler = op_cb_set_4_c, .mnemonic = "SET 4,C" };
+        table[0xE2] = .{ .handler = op_cb_set_4_d, .mnemonic = "SET 4,D" };
+        table[0xE3] = .{ .handler = op_cb_set_4_e, .mnemonic = "SET 4,E" };
+        table[0xE4] = .{ .handler = op_cb_set_4_h, .mnemonic = "SET 4,H" };
+        table[0xE5] = .{ .handler = op_cb_set_4_l, .mnemonic = "SET 4,L" };
+        table[0xE6] = .{ .handler = op_cb_set_4_hl, .mnemonic = "SET 4,(HL)" };
+        table[0xE7] = .{ .handler = op_cb_set_4_a, .mnemonic = "SET 4,A" };
+        
+        table[0xE8] = .{ .handler = op_cb_set_5_b, .mnemonic = "SET 5,B" };
+        table[0xE9] = .{ .handler = op_cb_set_5_c, .mnemonic = "SET 5,C" };
+        table[0xEA] = .{ .handler = op_cb_set_5_d, .mnemonic = "SET 5,D" };
+        table[0xEB] = .{ .handler = op_cb_set_5_e, .mnemonic = "SET 5,E" };
+        table[0xEC] = .{ .handler = op_cb_set_5_h, .mnemonic = "SET 5,H" };
+        table[0xED] = .{ .handler = op_cb_set_5_l, .mnemonic = "SET 5,L" };
+        table[0xEE] = .{ .handler = op_cb_set_5_hl, .mnemonic = "SET 5,(HL)" };
+        table[0xEF] = .{ .handler = op_cb_set_5_a, .mnemonic = "SET 5,A" };
+        
+        table[0xF0] = .{ .handler = op_cb_set_6_b, .mnemonic = "SET 6,B" };
+        table[0xF1] = .{ .handler = op_cb_set_6_c, .mnemonic = "SET 6,C" };
+        table[0xF2] = .{ .handler = op_cb_set_6_d, .mnemonic = "SET 6,D" };
+        table[0xF3] = .{ .handler = op_cb_set_6_e, .mnemonic = "SET 6,E" };
+        table[0xF4] = .{ .handler = op_cb_set_6_h, .mnemonic = "SET 6,H" };
+        table[0xF5] = .{ .handler = op_cb_set_6_l, .mnemonic = "SET 6,L" };
+        table[0xF6] = .{ .handler = op_cb_set_6_hl, .mnemonic = "SET 6,(HL)" };
+        table[0xF7] = .{ .handler = op_cb_set_6_a, .mnemonic = "SET 6,A" };
+        
+        table[0xF8] = .{ .handler = op_cb_set_7_b, .mnemonic = "SET 7,B" };
+        table[0xF9] = .{ .handler = op_cb_set_7_c, .mnemonic = "SET 7,C" };
+        table[0xFA] = .{ .handler = op_cb_set_7_d, .mnemonic = "SET 7,D" };
+        table[0xFB] = .{ .handler = op_cb_set_7_e, .mnemonic = "SET 7,E" };
+        table[0xFC] = .{ .handler = op_cb_set_7_h, .mnemonic = "SET 7,H" };
+        table[0xFD] = .{ .handler = op_cb_set_7_l, .mnemonic = "SET 7,L" };
+        table[0xFE] = .{ .handler = op_cb_set_7_hl, .mnemonic = "SET 7,(HL)" };
+        table[0xFF] = .{ .handler = op_cb_set_7_a, .mnemonic = "SET 7,A" };
+        
+        break :init table;
+    };
 
     // ==================== Opcode Lookup Table ====================
 
@@ -2179,6 +3052,7 @@ pub const CPU = struct {
         table[0xC6] = .{ .handler = op_add_a_n8, .mnemonic = "ADD A,n8" };
         table[0xC9] = .{ .handler = op_ret, .mnemonic = "RET" };
         table[0xCA] = .{ .handler = op_jp_z_nn, .mnemonic = "JP Z,nn" };
+        table[0xCB] = .{ .handler = op_cb_prefix, .mnemonic = "CB PREFIX" };
         table[0xCD] = .{ .handler = op_call_nn, .mnemonic = "CALL nn" };
 
         table[0xFE] = .{ .handler = op_cp_a_n8, .mnemonic = "CP A,n8" };
@@ -2632,4 +3506,107 @@ test "HALT instruction" {
     const cycles = try cpu.step(&bus);
     try expect(cycles == 4);
     try expect(cpu.PC == 0x0101); // PC still at same position
+}
+
+test "CB prefix instructions - BIT, SET, RES" {
+    var bus = @import("system_bus.zig").g_test_system_bus;
+    try bus.init(bus.mappings);
+
+    var cpu = CPU{
+        .A = 0b10101010,
+        .F = 0,
+        .B = 0,
+        .C = 0,
+        .D = 0,
+        .E = 0,
+        .H = 0,
+        .L = 0,
+        .SP = 0xFFFE,
+        .PC = 0x0100,
+        .halted = false,
+        .ime = false,
+    };
+
+    // Test BIT 7,A (should be set)
+    try bus.write(0x0100, 0xCB); // CB prefix
+    try bus.write(0x0101, 0x7F); // BIT 7,A
+    var cycles = try cpu.step(&bus);
+    try expect(cycles == 8);
+    try expect(!cpu.getFlag(CPU.Z_FLAG)); // Bit is set, so Z should be 0
+    try expect(cpu.getFlag(CPU.H_FLAG)); // H flag always set for BIT
+    try expect(cpu.PC == 0x0102);
+
+    // Test BIT 0,A (should be clear)
+    try bus.write(0x0102, 0xCB); // CB prefix
+    try bus.write(0x0103, 0x47); // BIT 0,A
+    cycles = try cpu.step(&bus);
+    try expect(cycles == 8);
+    try expect(cpu.getFlag(CPU.Z_FLAG)); // Bit is clear, so Z should be 1
+    try expect(cpu.PC == 0x0104);
+
+    // Test RES 7,A (reset bit 7)
+    try bus.write(0x0104, 0xCB); // CB prefix
+    try bus.write(0x0105, 0xBF); // RES 7,A
+    cycles = try cpu.step(&bus);
+    try expect(cycles == 8);
+    try expect(cpu.A == 0b00101010); // Bit 7 cleared
+    try expect(cpu.PC == 0x0106);
+
+    // Test SET 0,A (set bit 0)
+    try bus.write(0x0106, 0xCB); // CB prefix
+    try bus.write(0x0107, 0xC7); // SET 0,A
+    cycles = try cpu.step(&bus);
+    try expect(cycles == 8);
+    try expect(cpu.A == 0b00101011); // Bit 0 set
+    try expect(cpu.PC == 0x0108);
+}
+
+test "CB prefix instructions - Rotates and Shifts" {
+    var bus = @import("system_bus.zig").g_test_system_bus;
+    try bus.init(bus.mappings);
+
+    var cpu = CPU{
+        .A = 0b10000001,
+        .F = 0,
+        .B = 0,
+        .C = 0,
+        .D = 0,
+        .E = 0,
+        .H = 0,
+        .L = 0,
+        .SP = 0xFFFE,
+        .PC = 0x0100,
+        .halted = false,
+        .ime = false,
+    };
+
+    // Test RLC A (rotate left)
+    try bus.write(0x0100, 0xCB); // CB prefix
+    try bus.write(0x0101, 0x07); // RLC A
+    var cycles = try cpu.step(&bus);
+    try expect(cycles == 8);
+    try expect(cpu.A == 0b00000011); // Rotated left, MSB goes to LSB and Carry
+    try expect(cpu.getFlag(CPU.C_FLAG)); // Carry flag set from MSB
+    try expect(cpu.PC == 0x0102);
+
+    // Test SLA B (shift left arithmetic)
+    cpu.B = 0b01010101;
+    try bus.write(0x0102, 0xCB); // CB prefix
+    try bus.write(0x0103, 0x20); // SLA B
+    cycles = try cpu.step(&bus);
+    try expect(cycles == 8);
+    try expect(cpu.B == 0b10101010); // Shifted left
+    try expect(!cpu.getFlag(CPU.C_FLAG)); // No carry (MSB was 0)
+    try expect(cpu.PC == 0x0104);
+
+    // Test SWAP A
+    cpu.A = 0xF3;
+    try bus.write(0x0104, 0xCB); // CB prefix
+    try bus.write(0x0105, 0x37); // SWAP A
+    cycles = try cpu.step(&bus);
+    try expect(cycles == 8);
+    try expect(cpu.A == 0x3F); // Nibbles swapped
+    try expect(!cpu.getFlag(CPU.Z_FLAG)); // Not zero
+    try expect(!cpu.getFlag(CPU.C_FLAG)); // All flags cleared except Z
+    try expect(cpu.PC == 0x0106);
 }
