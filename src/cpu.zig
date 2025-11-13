@@ -1973,14 +1973,16 @@ pub const CPU = struct {
         table[0x05] = .{ .handler = op_dec_b, .mnemonic = "DEC B" };
         table[0x06] = .{ .handler = op_ld_b_n8, .mnemonic = "LD B,n8" };
         table[0x07] = .{ .handler = op_rlca, .mnemonic = "RLCA" };
+        // TODO: 0x08
+        table[0x09] = .{ .handler = op_add_hl_bc, .mnemonic = "ADD HL, BC" };
         table[0x0A] = .{ .handler = op_ld_a_bc, .mnemonic = "LD A,(BC)" };
         table[0x0B] = .{ .handler = op_dec_bc, .mnemonic = "DEC BC" };
         table[0x0C] = .{ .handler = op_inc_c, .mnemonic = "INC C" };
         table[0x0D] = .{ .handler = op_dec_c, .mnemonic = "DEC C" };
         table[0x0E] = .{ .handler = op_ld_c_n8, .mnemonic = "LD C,n8" };
         table[0x0F] = .{ .handler = op_rrca, .mnemonic = "RRCA" };
-        table[0x10] = .{ .handler = op_stop, .mnemonic = "STOP" };
 
+        table[0x10] = .{ .handler = op_stop, .mnemonic = "STOP" };
         table[0x11] = .{ .handler = op_ld_de_n16, .mnemonic = "LD DE,n16" };
         table[0x12] = .{ .handler = op_ld_de_a, .mnemonic = "LD (DE),A" };
         table[0x13] = .{ .handler = op_inc_de, .mnemonic = "INC DE" };
@@ -1989,6 +1991,7 @@ pub const CPU = struct {
         table[0x16] = .{ .handler = op_ld_d_n8, .mnemonic = "LD D,n8" };
         table[0x17] = .{ .handler = op_rla, .mnemonic = "RLA" };
         table[0x18] = .{ .handler = op_jr_e8, .mnemonic = "JR e8" };
+        // TODO: 0x19
         table[0x1A] = .{ .handler = op_ld_a_de, .mnemonic = "LD A,(DE)" };
         table[0x1B] = .{ .handler = op_dec_de, .mnemonic = "DEC DE" };
         table[0x1C] = .{ .handler = op_inc_e, .mnemonic = "INC E" };
@@ -2005,6 +2008,7 @@ pub const CPU = struct {
         table[0x26] = .{ .handler = op_ld_h_n8, .mnemonic = "LD H,n8" };
         table[0x27] = .{ .handler = op_daa, .mnemonic = "DAA" };
         table[0x28] = .{ .handler = op_jr_z_e8, .mnemonic = "JR Z,e8" };
+        // TODO: 0x29
         table[0x2A] = .{ .handler = op_ld_a_hli, .mnemonic = "LD A,(HL+)" };
         table[0x2B] = .{ .handler = op_dec_hl, .mnemonic = "DEC HL" };
         table[0x2C] = .{ .handler = op_inc_l, .mnemonic = "INC L" };
@@ -2021,6 +2025,7 @@ pub const CPU = struct {
         table[0x36] = .{ .handler = op_ld_hl_n8, .mnemonic = "LD (HL),n8" };
         table[0x37] = .{ .handler = op_scf, .mnemonic = "SCF" };
         table[0x38] = .{ .handler = op_jr_c_e8, .mnemonic = "JR C,e8" };
+        // TODO: 0x39
         table[0x3A] = .{ .handler = op_ld_a_hld, .mnemonic = "LD A,(HL-)" };
         table[0x3B] = .{ .handler = op_dec_sp, .mnemonic = "DEC SP" };
         table[0x3C] = .{ .handler = op_inc_a, .mnemonic = "INC A" };
