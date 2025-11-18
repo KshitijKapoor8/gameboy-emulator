@@ -79,6 +79,8 @@ pub const SystemBus = struct {
         const start: usize = page.start_address;
         const slice = self.bus.mem[start .. start + PAGE_SIZE];
 
+        if (addr == 0xFF44) return 0x90;
+
         return page.read_fn(slice, @intCast(addr % PAGE_SIZE));
     }
 

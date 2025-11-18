@@ -22,7 +22,7 @@ pub fn main() !void {
     var cpu = @import("cpu.zig").CPU.init();
 
     // comptime var cycles = 0;
-    for (0..100) |_| {
+    for (0..0x100) |_| {
         _ = try cpu.step(&bus);
     }
 
