@@ -61,3 +61,21 @@ pub fn loadRomFromRomsDir() ![0x100]u8 {
 
     return rom_buf;
 }
+
+/// Reads exactly 0x100 (256) bytes from a file in the current directory.
+/// Errors if fewer bytes are available.
+///
+/// `file_path` is relative to cwd(), e.g. "roms/dmg_boot.bin".
+pub fn loadFixed256Rom(file_path: []const u8) ![0x100]u8 {
+    var cwd = std.fs.cwd();
+    var file = try cwd.openFile(file_path, .{ .mode = .read_only });
+    defer file.close();
+
+    var buf: [0x100]u8 = undefined;
+
+    const n = try file.readAll(&buf);
+    if (n != buf.len)
+        return error.FileTooSmall;
+
+    return buf;
+}
