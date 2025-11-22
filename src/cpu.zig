@@ -13,6 +13,7 @@ const Instruction = struct {
     mnemonic: []const u8,
 };
 
+/// An implementation of the Sharp LR35902 ISA; defines opcodes and implements instructions
 pub const CPU = struct {
     A: u8,
     F: u8, // flags: Z N H C -> bits 7, 6, 5, 4 respectively
