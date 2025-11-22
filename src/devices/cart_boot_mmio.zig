@@ -46,9 +46,40 @@ pub fn rom0Read(mem: []u8, offset: u8) u8 {
     return g_cart.read(addr);
 }
 
+// writes to rom0 addresses
 pub fn rom0Write(mem: []u8, offset: u8) u8 {
     const addr = calcAddr(mem, offset);
     g_cart.write(addr);
+}
+
+pub fn romxRead(mem: []u8, off: u8) u8
+{
+    const addr = calcAddr(mem, off);
+    return g_cart.read(addr);
+}
+
+pub fn romxWrite(mem: []u8, off: u8, value: u8) void
+{
+    const addr = calcAddr(mem, off);
+    g_cart.write(addr, value);
+}
+
+// 0xFF50 boot ROM disable register handlers (to be wired in your IO region)
+pub fn ff50Read(mem: []u8, off: u8) u8 {
+    _ = mem;
+    _ = off;
+    return boot_reg_value;
+}
+
+pub fn ff50Write(mem: []u8, off: u8, value: u8) void {
+    _ = mem;
+    _ = off;
+    boot_reg_value = value;
+
+    // On dmg, any write with bit 0 set disables the boot ROM
+    if ((value & 0x01) != 0) {
+        boot_enabled = false;
+    }
 }
 
 
