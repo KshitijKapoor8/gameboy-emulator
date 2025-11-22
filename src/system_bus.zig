@@ -13,7 +13,9 @@ const expectEqual = std.testing.expectEqual;
 const expectError = std.testing.expectError;
 
 var g_bus: Bus = Bus.init();
+var g_test_bus: Bus = Bus.init();
 pub var g_system_bus: SystemBus = .{ .bus = &g_bus, .mappings = MEMORY_MAP[0..] };
+pub var g_test_system_bus: SystemBus = .{ .bus = &g_test_bus, .mappings = MEMORY_MAP[0..] };
 
 /// The system bus that corresponds to memory and devices
 pub const SystemBus = struct {
@@ -76,6 +78,8 @@ pub const SystemBus = struct {
 
         const start: usize = page.start_address;
         const slice = self.bus.mem[start .. start + PAGE_SIZE];
+
+        if (addr == 0xFF44) return 0x90;
 
         return page.read_fn(slice, @intCast(addr % PAGE_SIZE));
     }

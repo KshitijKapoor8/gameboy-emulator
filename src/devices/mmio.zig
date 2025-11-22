@@ -2,7 +2,7 @@ const bus = @import("../bus.zig");
 pub const PageReadFn = bus.PageReadFn;
 pub const PageWriteFn = bus.PageWriteFn;
 
-pub const NUM_MEMORY_MAP: u8 = 10;
+pub const NUM_MEMORY_MAP: u8 = 9;
 
 pub const MMIO = struct {
     name: []const u8,
@@ -14,14 +14,10 @@ pub const MMIO = struct {
 
 // adjust to your real signatures
 fn dummyRead(mem: []u8, offset: u8) u8 {
-    _ = mem;
-    _ = offset;
-    return 0xFF;
+    return mem[offset];
 }
 fn dummyWrite(mem: []u8, offset: u8, value: u8) void {
-    _ = mem;
-    _ = offset;
-    _ = value;
+    mem[offset] = value;
 }
 
 // this is now comptime-known
@@ -97,13 +93,5 @@ pub const MEMORY_MAP = [_]MMIO{
         .write = dummyWrite,
         .start_address = 0xFF00,
         .end_address = 0xFFFF,
-    },
-    // filler
-    .{
-        .name = "UNUSED",
-        .read = dummyRead,
-        .write = dummyWrite,
-        .start_address = 0x0000,
-        .end_address = 0x0000,
     },
 };
