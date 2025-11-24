@@ -47,9 +47,9 @@ pub fn rom0Read(mem: []u8, offset: u8) u8 {
 }
 
 // writes to rom0 addresses
-pub fn rom0Write(mem: []u8, offset: u8) u8 {
+pub fn rom0Write(mem: []u8, offset: u8, value: u8) void {
     const addr = calcAddr(mem, offset);
-    g_cart.write(addr);
+    g_cart.write(addr, value);
 }
 
 pub fn romxRead(mem: []u8, off: u8) u8

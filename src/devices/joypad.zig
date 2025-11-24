@@ -96,11 +96,11 @@ test "select buttons (P15=0) exposes A/B/Select/Start in lower nibble" {
 
     // press Start (upper nibble: Start=0, Select=1, B=1, A=0 -> 0b0110)
     jp.press(.Start);
-    try std.testing.expectEqual(@as(u8, 0xD6), jp.read()); 
+    try std.testing.expectEqual(@as(u8, 0xD6), jp.read());
 
     // release A then Start
     jp.release(.A);
-    try std.testing.expectEqual(@as(u8, 0xD7), jp.read()); 
+    try std.testing.expectEqual(@as(u8, 0xD7), jp.read());
 
     jp.release(.Start);
     try std.testing.expectEqual(@as(u8, 0xDF), jp.read());

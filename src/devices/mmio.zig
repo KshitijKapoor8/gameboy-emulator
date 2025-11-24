@@ -1,5 +1,6 @@
 const bus = @import("../bus.zig");
-const cart_mmio = @import("devices/cart_boot_mmio.zig");
+const cart_mmio = @import("cart_boot_mmio.zig");
+
 pub const PageReadFn = bus.PageReadFn;
 pub const PageWriteFn = bus.PageWriteFn;
 
