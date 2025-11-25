@@ -1,4 +1,6 @@
 const bus = @import("../bus.zig");
+const cart_mmio = @import("cart_boot_mmio.zig");
+
 pub const PageReadFn = bus.PageReadFn;
 pub const PageWriteFn = bus.PageWriteFn;
 
@@ -25,16 +27,16 @@ pub const MEMORY_MAP = [_]MMIO{
     // 0x0000–0x3FFF: fixed ROM
     .{
         .name = "ROM0",
-        .read = dummyRead,
-        .write = dummyWrite,
+        .read = cart_mmio.rom0Read,
+        .write = cart_mmio.rom0Write,
         .start_address = 0x0000,
         .end_address = 0x3FFF,
     },
     // 0x4000–0x7FFF: switchable ROM
     .{
         .name = "ROMX",
-        .read = dummyRead,
-        .write = dummyWrite,
+        .read = cart_mmio.romxRead,
+        .write = cart_mmio.romxWrite,
         .start_address = 0x4000,
         .end_address = 0x7FFF,
     },
