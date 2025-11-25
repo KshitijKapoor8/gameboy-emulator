@@ -1,12 +1,13 @@
-pub const ReadFn  = *const fn (mem: []u8, off: u8) u8;
-pub const WriteFn = *const fn (mem: []u8, off: u8, v: u8) void;
-pub const InitFn  = *const fn () void; // device-specific init(cfg) is called by you
+const PageReadFn = @import("../bus.zig").PageReadFn;
+const PageWriteFn = @import("../bus.zig").PageWriteFn;
+
+pub const InitFn = *const fn () void; // device-specific init(cfg) is called by you
 
 pub const Device = struct {
     name: []const u8,
     // each device will have read and write functions
-    read: ReadFn,
-    write: WriteFn,
+    read: PageReadFn,
+    write: PageWriteFn,
     // each device should have an initialization function where it initializes its variables
     init: ?InitFn = null,
 };

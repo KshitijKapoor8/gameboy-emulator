@@ -3,72 +3,87 @@ const std = @import("std");
 /// # OAM Summary
 /// object attribute memory: this is where object attributes reside
 /// each of the 40 possible sprites that can exist consist of four bytes...
-pub const SPRITE_COUNT = 40;
-pub const ENTRY_SIZE = 4;
-pub const OAM_SIZE = SPRITE_COUNT * ENTRY_SIZE;
+pub const SPRITE_COUNT: usize = 40;
+pub const ENTRY_SIZE: usize = 4;
+pub const OAM_SIZE: usize = SPRITE_COUNT * ENTRY_SIZE;
 
 pub const Sprite = packed struct {
-    y: u8,    // y position + 16
-    x: u8,    // x position + 8
+    y: u8, // y position + 16
+    x: u8, // x position + 8
     tile: u8, // tile index
     flags: u8, // flags per bit (attributes)
 };
 
-// $FE00–$FE9F is the memory mapped region for OAM!
+comptime {
+    std.debug.assert(@sizeOf(Sprite) == ENTRY_SIZE);
+    std.debug.assert(OAM_SIZE == SPRITE_COUNT * @sizeOf(Sprite));
+}
+
+/// $FE00–$FE9F is the memory mapped region for OAM!
 pub const Oam = struct {
     // 160 bytes of the memory that represents the OAM
     mem: [OAM_SIZE]u8 = [_]u8{0} ** OAM_SIZE,
     ppu_mode: *const u8 = undefined,
 
-    // initializes OAM based on PPU mode
+    /// initializes OAM based on PPU mode
     pub fn init(self: *Oam, ppu_mode: *const u8) void {
         self.ppu_mode = ppu_mode;
         self.reset();
     }
 
-    // converts the entire OAM into a Sprite slice
+    /// converts the entire OAM into a Sprite slice
     pub fn sprites(self: *Oam) []align(1) Sprite {
         return std.mem.bytesAsSlice(Sprite, self.mem[0..]);
     }
 
-    // checks if ppu mode allows for CPU reads and writes!
+    /// checks if ppu mode allows for CPU reads and writes!
     fn accessAllowed(self: *Oam) bool {
         const mode = self.ppu_mode.*;
         // CPU is blocked in modes 2 (OAM scan) and 3 (transfer)
         return !(mode == 2 or mode == 3);
     }
 
-    // set all OAM bytes to 0
+    /// set all OAM bytes to 0
     pub fn reset(self: *Oam) void {
         @memset(self.mem[0..], 0);
     }
 
-    // CPU-facing: return byte of memory at offset
+    /// CPU-facing: return byte of memory at offset
     pub fn read(self: *Oam, mem: []u8, off: u8) u8 {
-        _ = mem; // unused; bus passes it but we keep our own backing
+        _ = mem; // slice from bus; we store separately in self.mem
+
+        // assert offset is within OAM range
+        std.debug.assert(off < self.mem.len);
+
         if (!self.accessAllowed())
             return 0xFF;
+
         return self.mem[off];
     }
 
-    // CPU-facing: write byte of memory at offset
+    /// CPU-facing: write byte of memory at offset
     pub fn write(self: *Oam, mem: []u8, off: u8, val: u8) void {
-        _ = mem;
+        _ = mem; // slice from bus; we store separately in self.mem
+
+        // assert offset is within OAM range
+        std.debug.assert(off < self.mem.len);
+
         if (!self.accessAllowed())
             return;
+
         self.mem[off] = val;
     }
 
-    // get sprite entry at the index
+    /// get sprite entry at the index
     pub fn getSprite(self: *Oam, idx: usize) Sprite {
         return self.sprites()[idx];
     }
 
-    // called by PPU to select up to 10 sprites for a scanline
+    /// called by PPU to select up to 10 sprites for a scanline
     pub fn selectScanlineSprites(
         self: *Oam,
         allocator: std.mem.Allocator,
-        ly: u8,           // current scanline (LY)
+        ly: u8, // current scanline (LY)
         sprite_height: u8, // 8 or 16 according to LCDC
     ) ![]Sprite {
         // allocate space for up to 10 sprites
@@ -91,7 +106,7 @@ pub const Oam = struct {
     }
 };
 
-// helper that sets the parts of mem to given values for the test cases
+/// helper that sets the parts of mem to given values for the test cases
 fn setEntry(o: *Oam, idx: usize, y: u8, x: u8, tile: u8, flags: u8) void {
     const base = idx * ENTRY_SIZE;
     o.mem[base + 0] = y;
@@ -147,9 +162,9 @@ test "OAM: selectScanlineSprites caps at 10 and preserves OAM order" {
         setEntry(
             &o,
             i,
-            ly + 16,                          // top at this scanline
-            @as(u8, @intCast(i + 8)),         // x
-            @as(u8, @intCast(i)),             // tile = i (to test order)
+            ly + 16, // top at this scanline (y field is +16)
+            @as(u8, @intCast(i + 8)), // x
+            @as(u8, @intCast(i)), // tile = i (to test order)
             0,
         );
     }
