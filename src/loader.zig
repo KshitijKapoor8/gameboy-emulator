@@ -143,3 +143,22 @@ pub fn loadCartRomAlloc(allocator: std.mem.Allocator) ![]u8 {
 
     return buf;
 }
+
+pub fn loadCartRomFromPath(
+    allocator: std.mem.Allocator,
+    file_path: []const u8,
+) ![]u8 {
+    var cwd = std.fs.cwd();
+    var file = try cwd.openFile(file_path, .{ .mode = .read_only });
+    defer file.close();
+
+    const stat = try file.stat();
+    const rom_size: usize = @intCast(stat.size);
+
+    const buf = try allocator.alloc(u8, rom_size);
+    const n = try file.readAll(buf);
+    if (n != rom_size) return error.ShortRead;
+
+    std.debug.print("Loaded ROM {s} (size = {d} bytes)\n", .{ file_path, rom_size });
+    return buf;
+}

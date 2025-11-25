@@ -63,6 +63,26 @@ pub const CPU = struct {
         };
     }
 
+    pub fn initPostBoot() CPU {
+        return .{
+            .A = 0x01,
+            .F = 0xB0,
+            .B = 0x00,
+            .C = 0x13,
+            .D = 0x00,
+            .E = 0xD8,
+            .H = 0x01,
+            .L = 0x4D,
+            .SP = 0xFFFE,
+            .PC = 0x0100,
+            .halted = false,
+            .ime = false,
+            .opcode_counts = [_]u64{0} ** 256,
+            .cb_opcode_counts = [_]u64{0} ** 256,
+        };
+    }
+
+
     /// # Set a specific flag using a flag mask
     ///
     /// Either sets or removes a CPU flag, useful for instruction processing
@@ -4173,7 +4193,7 @@ test "run whole boot ROM" {
     var cpu = CPU.init();
     var cycles: usize = 0;
 
-    const rom_buf = try @import("loader.zig").loadFixed256Rom("roms/dmg_boot.bin");
+    const rom_buf = try @import("loader.zig").loadFixed256Rom("../roms/dmg_boot.bin");
 
     for (rom_buf, 0..0x100) |b, i| {
         try bus.write(@intCast(i), b);

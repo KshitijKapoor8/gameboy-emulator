@@ -78,3 +78,8 @@ pub fn ff50Write(mem: []u8, off: u8, value: u8) void {
         boot_enabled = false;
     }
 }
+
+pub fn disableBootRom() void {
+    boot_enabled = false;
+    boot_reg_value = 0x01;
+}

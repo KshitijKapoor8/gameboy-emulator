@@ -32,7 +32,7 @@ pub fn main() !void {
         _ = try cpu.step(&bus);
     }
 
-    std.debug.print("{}", .{cpu});
+    // std.debug.print("{}", .{cpu});
 
     return;
 }

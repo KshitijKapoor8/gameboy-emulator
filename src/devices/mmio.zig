@@ -6,6 +6,52 @@ pub const PageWriteFn = bus.PageWriteFn;
 
 pub const NUM_MEMORY_MAP: u8 = 9;
 
+const std = @import("std");
+
+// simple serial log buffer for tests
+pub var serial_log: [4096]u8 = undefined;
+pub var serial_len: usize = 0;
+
+pub fn serialReset() void {
+    serial_len = 0;
+}
+
+pub fn serialSlice() []const u8 {
+    return serial_log[0..serial_len];
+}
+
+fn serialAppend(byte: u8) void {
+    if (serial_len < serial_log.len) {
+        serial_log[serial_len] = byte;
+        serial_len += 1;
+    }
+}
+
+fn ioRead(mem: []u8, offset: u8) u8 {
+    return mem[offset];
+}
+
+fn ioWrite(mem: []u8, offset: u8, value: u8) void {
+    mem[offset] = value;
+
+    // serial: SB = 0xFF01, SC = 0xFF02
+    // Inside this page, offset 0x01 -> SB, 0x02 -> SC
+    if (offset == 0x01) {
+        // SB: byte to send; just stored above
+        return;
+    }
+
+    if (offset == 0x02) {
+        // SC: when 0x81 is written, transmit SB
+        if ((value & 0x81) == 0x81) {
+            const sb = mem[0x01]; // byte in SB
+            serialAppend(sb);
+            // also print to stderr for manual debugging if you want:
+            // std.debug.print("{c}", .{sb});
+        }
+    }
+}
+
 pub const MMIO = struct {
     name: []const u8,
     read: PageReadFn,
@@ -91,8 +137,8 @@ pub const MEMORY_MAP = [_]MMIO{
     // 0xFF00–0xFFFF: I/O + HRAM
     .{
         .name = "IO_HRAM",
-        .read = dummyRead,
-        .write = dummyWrite,
+        .read = ioRead,
+        .write = ioWrite,
         .start_address = 0xFF00,
         .end_address = 0xFFFF,
     },
