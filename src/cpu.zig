@@ -1,4 +1,8 @@
 const std = @import("std");
+const cart_mmio = @import("devices/cart_boot_mmio.zig");
+const loader = @import("loader.zig");
+const BootRom = @import("devices/bootrom.zig").BootRom;
+const Cartridge = @import("devices/cartridge.zig").Cartridge;
 const SystemBus = @import("system_bus.zig").SystemBus;
 // const g_test_system_bus = @import("system_bus.zig").g_test_system_bus;
 
@@ -81,7 +85,6 @@ pub const CPU = struct {
             .cb_opcode_counts = [_]u64{0} ** 256,
         };
     }
-
 
     /// # Set a specific flag using a flag mask
     ///
@@ -4188,18 +4191,20 @@ pub const CPU = struct {
 };
 
 test "run whole boot ROM" {
-    var bus = @import("system_bus.zig").g_test_system_bus;
-    try bus.init(bus.mappings);
-    var cpu = CPU.init();
-    var cycles: usize = 0;
+    // 1. Set up system bus
+    var sysbus = &@import("system_bus.zig").g_test_system_bus;
+    try sysbus.init(sysbus.mappings);
 
-    const rom_buf = try @import("loader.zig").loadFixed256Rom("../roms/dmg_boot.bin");
+    // 2. Wire MMIO bus slice
+    cart_mmio.setBus(&sysbus.bus.mem);
 
-    for (rom_buf, 0..0x100) |b, i| {
-        try bus.write(@intCast(i), b);
-    }
+    // 3. Load boot ROM into BootRom
+    const rom_buf = try loader.loadFixed256Rom("../roms/dmg_boot.bin");
+    var boot = BootRom.init(rom_buf[0..]);
 
-    // Write valid Nintendo logo into cartridge header at 0x0104–0x0133
+    // 4. Build a tiny fake cartridge just for logo + header
+    var cart_bytes: [0x150]u8 = [_]u8{0} ** 0x150;
+
     const nintendo_logo = [_]u8{
         0xCE, 0xED, 0x66, 0x66, 0xCC, 0x0D, 0x00, 0x0B,
         0x03, 0x73, 0x00, 0x83, 0x00, 0x0C, 0x00, 0x0D,
@@ -4208,27 +4213,31 @@ test "run whole boot ROM" {
         0xBB, 0xBB, 0x67, 0x63, 0x6E, 0x0E, 0xEC, 0xCC,
         0xDD, 0xDC, 0x99, 0x9F, 0xBB, 0xB9, 0x33, 0x3E,
     };
-
     for (nintendo_logo, 0..) |b, i| {
-        const offset: u16 = @intCast(i);
-        const addr: u16 = 0x104 + offset;
-        try bus.write(addr, b);
+        cart_bytes[0x0104 + i] = b;
     }
 
     const header_bytes = [_]u8{
         0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xE7,
     };
     for (header_bytes, 0..) |b, i| {
-        const offset: u16 = @intCast(i);
-        const addr: u16 = 0x0134 + offset;
-        try bus.write(addr, b);
+        cart_bytes[0x0134 + i] = b;
     }
 
-    while (cpu.PC != 0x0100) { // boot ROM jumps to 0x0100 when done
-        const c = try cpu.step(&bus);
+    var cart = Cartridge.init(cart_bytes[0..]);
+
+    // 5. Plug BootRom + Cartridge into MMIO
+    cart_mmio.setCartridgeBoot(&cart, &boot);
+    // leave boot ROM enabled so 0x0000–0x00FF are served by BootRom.read
+
+    // 6. CPU
+    var cpu = CPU.init();
+    var cycles: usize = 0;
+
+    while (cpu.PC != 0x0100) {
+        const c = try cpu.step(sysbus);
         cycles += c;
     }
-
     try std.testing.expectEqual(@as(u16, 0x0100), cpu.PC);
     try std.testing.expectEqual(@as(u16, 0xFFFE), cpu.SP);
 
