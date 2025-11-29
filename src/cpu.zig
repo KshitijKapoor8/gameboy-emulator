@@ -4191,6 +4191,7 @@ pub const CPU = struct {
 };
 
 test "run whole boot ROM" {
+    cart_mmio.reset();
     // 1. Set up system bus
     var sysbus = &@import("system_bus.zig").g_test_system_bus;
     try sysbus.init(sysbus.mappings);
@@ -4239,6 +4240,7 @@ test "run whole boot ROM" {
         cycles += c;
     }
     try std.testing.expectEqual(@as(u16, 0x0100), cpu.PC);
+    std.debug.print("this is cpu stack pointer {d}", .{cpu.SP});
     try std.testing.expectEqual(@as(u16, 0xFFFE), cpu.SP);
 
     try std.testing.expectEqual(@as(u16, 0x01B0), CPU.get16BitRegister(cpu.A, cpu.F));

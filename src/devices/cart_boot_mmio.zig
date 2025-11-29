@@ -83,3 +83,11 @@ pub fn disableBootRom() void {
     boot_enabled = false;
     boot_reg_value = 0x01;
 }
+
+pub fn reset() void {
+    g_bus = &[_]u8{};
+    g_cart = undefined;
+    g_boot = undefined;
+    boot_enabled = true;
+    boot_reg_value = 0;
+}
